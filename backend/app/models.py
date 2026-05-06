@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Float, ForeignKey
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Float, ForeignKey, Text, Time, Date, JSON
 from sqlalchemy.orm import relationship
 from .database import Base
 import datetime
@@ -7,17 +7,15 @@ class User(Base):
     __tablename__ = "users"
     
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(String, unique=True, index=True)  # faculty_id or student_id
+    user_id = Column(String, unique=True, index=True)
     email = Column(String, unique=True, index=True)
     full_name = Column(String)
-    user_type = Column(String)  # 'admin', 'faculty', 'student'
-    hashed_password = Column(String, nullable=True)  # Null for students initially
+    user_type = Column(String)  # 'admin', 'manager', 'student'
+    department = Column(String, nullable=True)
+    hashed_password = Column(String)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
-    
-    # Relationships
-    student_profile = relationship("StudentProfile", back_populates="user", uselist=False)
-    faculty_profile = relationship("FacultyProfile", back_populates="user", uselist=False)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 
 class StudentProfile(Base):
     __tablename__ = "student_profiles"
@@ -25,62 +23,121 @@ class StudentProfile(Base):
     id = Column(Integer, primary_key=True, index=True)
     student_id = Column(String, unique=True, index=True)
     roll_number = Column(String)
-    department = Column(String)
+    course = Column(String)
     year = Column(Integer)
     semester = Column(Integer)
     phone_number = Column(String)
-    
-    # Foreign key to User
-    user_id = Column(Integer, ForeignKey("users.id"))
-    user = relationship("User", back_populates="student_profile")
+    current_internship_id = Column(Integer, ForeignKey("internships.id"), nullable=True)
+    total_hours_completed = Column(Float, default=0)
+    total_days_present = Column(Integer, default=0)
 
-class FacultyProfile(Base):
-    __tablename__ = "faculty_profiles"
+class ManagerProfile(Base):
+    __tablename__ = "manager_profiles"
     
     id = Column(Integer, primary_key=True, index=True)
-    faculty_id = Column(String, unique=True, index=True)
-    department = Column(String)
+    manager_id = Column(String, unique=True, index=True)
     designation = Column(String)
     phone_number = Column(String)
-    
-    # Foreign key to User
-    user_id = Column(Integer, ForeignKey("users.id"))
-    user = relationship("User", back_populates="faculty_profile")
+    department = Column(String)
+    managed_internships = Column(JSON, default=list)
 
-class Session(Base):
-    __tablename__ = "sessions"
+class Company(Base):
+    __tablename__ = "companies"
     
     id = Column(Integer, primary_key=True, index=True)
-    session_nonce = Column(String, unique=True, index=True)
-    faculty_id = Column(String, index=True)
-    class_center_lat = Column(Float)
-    class_center_lng = Column(Float)
-    radius_meters = Column(Integer)
-    start_time = Column(DateTime)
-    end_time = Column(DateTime)
-    department = Column(String, nullable=True)
-    subject = Column(String, nullable=True)  # Add department filtering
+    name = Column(String, unique=True, index=True)
+    address = Column(String)
+    latitude = Column(Float)
+    longitude = Column(Float)
+    radius_meters = Column(Integer, default=200)
+    created_by = Column(String)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
-class SessionAttendance(Base):
-    __tablename__ = "session_attendance"
+class Holiday(Base):
+    __tablename__ = "holidays"
     
     id = Column(Integer, primary_key=True, index=True)
-    session_nonce = Column(String, index=True)
-    student_id = Column(String, index=True)  # Store actual ID (admin can see)
-    student_id_hash = Column(String, index=True)  # For ZK privacy
-    timestamp = Column(DateTime, default=datetime.datetime.utcnow)
-    location_lat = Column(Float, nullable=True)
-    location_lng = Column(Float, nullable=True)
-    proof_hash = Column(String, nullable=True)
-    is_verified = Column(Boolean, default=True)
+    date = Column(Date, unique=True, index=True)
+    name = Column(String)
+    description = Column(String, nullable=True)
+    is_global = Column(Boolean, default=True)
+    company_id = Column(Integer, ForeignKey("companies.id"), nullable=True)
+    created_by = Column(String)
+
+class Internship(Base):
+    __tablename__ = "internships"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    internship_id = Column(String, unique=True, index=True)
+    company_id = Column(Integer, ForeignKey("companies.id"))
+    role_name = Column(String)
+    description = Column(Text)
+    manager_id = Column(String, index=True)
+    start_date = Column(Date)
+    end_date = Column(Date)
+    daily_start_time = Column(Time)
+    daily_end_time = Column(Time)
+    lunch_break_minutes = Column(Integer, default=60)
+    required_hours_per_day = Column(Float)
+    min_hours_for_present = Column(Float, default=6.0)
+    status = Column(String)  # 'upcoming', 'active', 'completed'
+    # Demo mode fields
+    is_test_mode = Column(Integer, default=0)
+    test_duration_minutes = Column(Integer, default=60)
+    proof_interval_minutes = Column(Integer, default=60)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+class InternshipEnrollment(Base):
+    __tablename__ = "internship_enrollments"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    internship_id = Column(Integer, ForeignKey("internships.id"))
+    student_id = Column(String, index=True)
+    enrolled_date = Column(DateTime, default=datetime.datetime.utcnow)
+    status = Column(String, default='active')
+
+class DailyAttendance(Base):
+    __tablename__ = "daily_attendance"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    internship_id = Column(Integer, ForeignKey("internships.id"))
+    student_id = Column(String, index=True)
+    date = Column(Date, index=True)
+    first_proof_time = Column(DateTime, nullable=True)
+    last_proof_time = Column(DateTime, nullable=True)
+    total_minutes = Column(Integer, default=0)
+    total_hours = Column(Float, default=0)
+    proof_count = Column(Integer, default=0)
+    status = Column(String)  # 'full_day', 'partial', 'absent', 'in_progress'
+    is_verified = Column(Boolean, default=False)
 
 class AttendanceProof(Base):
     __tablename__ = "attendance_proofs"
-
+    
     id = Column(Integer, primary_key=True, index=True)
-    session_id = Column(String, index=True)
-    student_id_hash = Column(String, index=True)
-    zk_proof = Column(String)
-    signature = Column(String)
-    verified_at = Column(DateTime, default=datetime.datetime.utcnow)
-    is_verified = Column(Boolean, default=False)
+    attendance_id = Column(Integer, ForeignKey("daily_attendance.id"))
+    student_id = Column(String, index=True)
+    internship_id = Column(Integer, ForeignKey("internships.id"))
+    timestamp = Column(DateTime, default=datetime.datetime.utcnow, index=True)
+    latitude = Column(Float)
+    longitude = Column(Float)
+    distance_from_company = Column(Float, nullable=True)
+    zk_proof = Column(Text, nullable=True)
+    public_signals = Column(Text, nullable=True)
+    proof_type = Column(String)  # 'entry', 'hourly', 'exit'
+    is_valid = Column(Boolean, default=True)
+    verified_at = Column(DateTime, nullable=True)
+
+class ManualOverride(Base):
+    __tablename__ = "manual_overrides"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    attendance_id = Column(Integer, ForeignKey("daily_attendance.id"))
+    student_id = Column(String)
+    internship_id = Column(Integer)
+    original_status = Column(String)
+    new_status = Column(String)
+    reason = Column(Text)
+    changed_by = Column(String)
+    changed_at = Column(DateTime, default=datetime.datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)

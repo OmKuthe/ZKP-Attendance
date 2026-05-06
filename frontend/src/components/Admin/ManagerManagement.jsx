@@ -1,98 +1,90 @@
 import React, { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { 
-  PlusIcon, 
   TrashIcon, 
-  PencilIcon,
+  UserPlusIcon, 
   ArrowLeftIcon,
-  UserPlusIcon,
   MagnifyingGlassIcon,
   XMarkIcon
 } from '@heroicons/react/24/outline'
 import api from '../../services/api'
 import toast from 'react-hot-toast'
 
-const StudentManagement = () => {
+const ManagerManagement = () => {
   const navigate = useNavigate()
-  const [students, setStudents] = useState([])
+  const [managers, setManagers] = useState([])
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
   const [searchTerm, setSearchTerm] = useState('')
   const [formData, setFormData] = useState({
-    student_id: '',
+    manager_id: '',
     email: '',
     full_name: '',
-    roll_number: '',
-    course: '',
-    year: '',
-    semester: '',
-    phone_number: '',
+    designation: '',
     department: '',
+    phone_number: '',
     password: ''
   })
 
   useEffect(() => {
-    fetchStudents()
+    fetchManagers()
   }, [])
 
-  const fetchStudents = async () => {
+  const fetchManagers = async () => {
     try {
-      const response = await api.get('/api/admin/students/list', {
+      const response = await api.get('/api/admin/managers/list', {
         params: { admin_token: 'admin_secret_key_2026' }
       })
-      setStudents(response.data.students)
+      setManagers(response.data.managers)
     } catch (error) {
-      console.error('Error fetching students:', error)
-      toast.error('Failed to load students')
+      console.error('Error fetching managers:', error)
+      toast.error('Failed to load managers')
     } finally {
       setLoading(false)
     }
   }
 
-  const handleCreateStudent = async (e) => {
+  const handleCreateManager = async (e) => {
     e.preventDefault()
     try {
-      await api.post('/api/admin/students/create', formData, {
+      await api.post('/api/admin/managers/create', formData, {
         params: { admin_token: 'admin_secret_key_2026' }
       })
-      toast.success('Student created successfully!')
+      toast.success('Manager created successfully!')
       setShowModal(false)
       setFormData({
-        student_id: '',
+        manager_id: '',
         email: '',
         full_name: '',
-        roll_number: '',
-        course: '',
-        year: '',
-        semester: '',
-        phone_number: '',
+        designation: '',
         department: '',
+        phone_number: '',
         password: ''
       })
-      fetchStudents()
+      fetchManagers()
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Failed to create student')
+      toast.error(error.response?.data?.detail || 'Failed to create manager')
     }
   }
 
-  const handleDeleteStudent = async (studentId) => {
-    if (window.confirm(`Are you sure you want to delete student ${studentId}?`)) {
+  const handleDeleteManager = async (managerId) => {
+    if (window.confirm(`Are you sure you want to delete manager ${managerId}?`)) {
       try {
-        await api.delete(`/api/admin/students/${studentId}`, {
+        await api.delete(`/api/admin/managers/${managerId}`, {
           params: { admin_token: 'admin_secret_key_2026' }
         })
-        toast.success('Student deleted successfully!')
-        fetchStudents()
+        toast.success('Manager deleted successfully!')
+        fetchManagers()
       } catch (error) {
-        toast.error('Failed to delete student')
+        toast.error('Failed to delete manager')
       }
     }
   }
 
-  const filteredStudents = students.filter(student =>
-    student.student_id.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    student.full_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    student.roll_number.toLowerCase().includes(searchTerm.toLowerCase())
+  const filteredManagers = managers.filter(manager =>
+    manager.manager_id.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    manager.full_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    manager.department.toLowerCase().includes(searchTerm.toLowerCase())
   )
 
   if (loading) {
@@ -117,15 +109,15 @@ const StudentManagement = () => {
         <div className="bg-white rounded-lg shadow overflow-hidden">
           <div className="px-6 py-4 border-b border-gray-200 flex flex-wrap gap-4 justify-between items-center">
             <div>
-              <h2 className="text-2xl font-bold text-gray-900">Student Management</h2>
-              <p className="text-gray-600">Manage all students in the system</p>
+              <h2 className="text-2xl font-bold text-gray-900">Manager Management</h2>
+              <p className="text-gray-600">Manage faculty and coordinators</p>
             </div>
             <div className="flex gap-3">
               <div className="relative">
                 <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
                 <input
                   type="text"
-                  placeholder="Search students..."
+                  placeholder="Search managers..."
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
                   className="pl-9 pr-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500"
@@ -136,7 +128,7 @@ const StudentManagement = () => {
                 className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-indigo-600 hover:bg-indigo-700"
               >
                 <UserPlusIcon className="h-5 w-5 mr-2" />
-                Add Student
+                Add Manager
               </button>
             </div>
           </div>
@@ -145,33 +137,27 @@ const StudentManagement = () => {
             <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Student ID</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Manager ID</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Roll Number</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Course</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Year/Sem</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Designation</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Department</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Current Internship</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Total Hours</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Email</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Phone</th>
                   <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {filteredStudents.map((student) => (
-                  <tr key={student.student_id} className="hover:bg-gray-50">
-                    <td className="px-6 py-4 whitespace-nowrap text-sm font-mono text-gray-900">{student.student_id}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{student.full_name}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{student.roll_number}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{student.course}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{student.year}/{student.semester}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{student.department}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                      {student.current_internship || 'None'}
-                    </td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{student.total_hours} hrs</td>
+                {filteredManagers.map((manager) => (
+                  <tr key={manager.manager_id} className="hover:bg-gray-50">
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-mono text-gray-900">{manager.manager_id}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{manager.full_name}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{manager.designation}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{manager.department}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{manager.email}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{manager.phone_number}</td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                       <button
-                        onClick={() => handleDeleteStudent(student.student_id)}
+                        onClick={() => handleDeleteManager(manager.manager_id)}
                         className="text-red-600 hover:text-red-900 transition-colors"
                       >
                         <TrashIcon className="h-5 w-5" />
@@ -183,31 +169,31 @@ const StudentManagement = () => {
             </table>
           </div>
           
-          {filteredStudents.length === 0 && (
+          {filteredManagers.length === 0 && (
             <div className="p-8 text-center text-gray-500">
-              No students found
+              No managers found
             </div>
           )}
         </div>
       </div>
 
-      {/* Create Student Modal */}
+      {/* Create Manager Modal */}
       {showModal && (
         <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50">
           <div className="relative top-20 mx-auto p-5 border w-full max-w-md shadow-lg rounded-lg bg-white">
             <div className="flex justify-between items-center mb-4">
-              <h3 className="text-lg font-semibold text-gray-900">Add New Student</h3>
+              <h3 className="text-lg font-semibold text-gray-900">Add New Manager</h3>
               <button onClick={() => setShowModal(false)} className="text-gray-400 hover:text-gray-600">
                 <XMarkIcon className="h-6 w-6" />
               </button>
             </div>
             
-            <form onSubmit={handleCreateStudent} className="space-y-4 max-h-96 overflow-y-auto">
+            <form onSubmit={handleCreateManager} className="space-y-4">
               <input
                 type="text"
-                placeholder="Student ID *"
-                value={formData.student_id}
-                onChange={(e) => setFormData({...formData, student_id: e.target.value})}
+                placeholder="Manager ID *"
+                value={formData.manager_id}
+                onChange={(e) => setFormData({...formData, manager_id: e.target.value})}
                 className="w-full px-3 py-2 border border-gray-300 rounded-md"
                 required
               />
@@ -229,38 +215,12 @@ const StudentManagement = () => {
               />
               <input
                 type="text"
-                placeholder="Roll Number *"
-                value={formData.roll_number}
-                onChange={(e) => setFormData({...formData, roll_number: e.target.value})}
+                placeholder="Designation *"
+                value={formData.designation}
+                onChange={(e) => setFormData({...formData, designation: e.target.value})}
                 className="w-full px-3 py-2 border border-gray-300 rounded-md"
                 required
               />
-              <input
-                type="text"
-                placeholder="Course *"
-                value={formData.course}
-                onChange={(e) => setFormData({...formData, course: e.target.value})}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md"
-                required
-              />
-              <div className="grid grid-cols-2 gap-2">
-                <input
-                  type="number"
-                  placeholder="Year *"
-                  value={formData.year}
-                  onChange={(e) => setFormData({...formData, year: e.target.value})}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md"
-                  required
-                />
-                <input
-                  type="number"
-                  placeholder="Semester *"
-                  value={formData.semester}
-                  onChange={(e) => setFormData({...formData, semester: e.target.value})}
-                  className="w-full px-3 py-2 border border-gray-300 rounded-md"
-                  required
-                />
-              </div>
               <input
                 type="text"
                 placeholder="Department *"
@@ -279,10 +239,11 @@ const StudentManagement = () => {
               />
               <input
                 type="password"
-                placeholder="Password (optional)"
+                placeholder="Password *"
                 value={formData.password}
                 onChange={(e) => setFormData({...formData, password: e.target.value})}
                 className="w-full px-3 py-2 border border-gray-300 rounded-md"
+                required
               />
               
               <div className="flex gap-2 pt-2">
@@ -308,4 +269,4 @@ const StudentManagement = () => {
   )
 }
 
-export default StudentManagement
+export default ManagerManagement

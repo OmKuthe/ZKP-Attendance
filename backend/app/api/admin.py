@@ -1,207 +1,105 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Header, Response
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, func
+from sqlalchemy import select, and_, func, delete, update
 from sqlalchemy.orm import selectinload
 from ..database import get_db
-from ..models import User, StudentProfile, FacultyProfile, Session as SessionModel, SessionAttendance
-from pydantic import BaseModel, EmailStr
-from datetime import datetime, timedelta
-from typing import Optional, List
-import secrets
+from ..models import (
+    User, StudentProfile, ManagerProfile, Company, Internship, 
+    InternshipEnrollment, DailyAttendance, AttendanceProof
+)
+from ..schemas import (
+    StudentCreate, ManagerCreate, CompanyCreate, InternshipCreate
+)
+from ..utils.helpers import generate_internship_id
+from datetime import datetime, date, timedelta
 from passlib.context import CryptContext
-from fastapi import Response
-import csv
-from io import StringIO
+from typing import Optional, List
+import json
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+ADMIN_TOKEN = "admin_secret_key_2026"
 
-# ========== Pydantic Schemas ==========
-class CreateStudent(BaseModel):
-    student_id: str
-    email: EmailStr
-    full_name: str
-    roll_number: str
-    department: str
-    year: int
-    semester: int
-    phone_number: str
-
-class CreateFaculty(BaseModel):
-    faculty_id: str
-    email: EmailStr
-    full_name: str
-    department: str
-    designation: str
-    phone_number: str
-    password: str
-
-class CreateAdmin(BaseModel):
-    admin_id: str
-    email: EmailStr
-    full_name: str
-    password: str
-
-class StudentResponse(BaseModel):
-    student_id: str
-    email: str
-    full_name: str
-    roll_number: str
-    department: str
-    year: int
-    semester: int
-    phone_number: str
-    is_active: bool
-
-class FacultyResponse(BaseModel):
-    faculty_id: str
-    email: str
-    full_name: str
-    department: str
-    designation: str
-    phone_number: str
-    is_active: bool
-
-# ========== Admin Authentication ==========
-# Simple token-based auth (replace with JWT in production)
-ADMIN_TOKENS = {"admin_secret_key_2026": "admin"}
-
-async def verify_admin_token(token: str):
-    if token not in ADMIN_TOKENS:
-        raise HTTPException(status_code=401, detail="Admin access required")
+async def verify_admin(admin_token: str):
+    if admin_token != ADMIN_TOKEN:
+        raise HTTPException(status_code=401, detail="Invalid admin token")
     return True
 
-# ========== Initialize Default Admin ==========
-async def init_default_admin(db: AsyncSession):
-    """Create default admin if not exists"""
-    result = await db.execute(
-        select(User).where(User.user_type == "admin")
+async def create_user_account(db: AsyncSession, user_id: str, email: str, full_name: str, user_type: str, password: str = None):
+    hashed_password = pwd_context.hash(password) if password else ""
+    user = User(
+        user_id=user_id,
+        email=email,
+        full_name=full_name,
+        user_type=user_type,
+        hashed_password=hashed_password,
+        is_active=True
     )
-    admin = result.scalar_one_or_none()
-    
-    if not admin:
-        hashed_password = pwd_context.hash("admin123")
-        default_admin = User(
-            user_id="admin",
-            email="admin@zkattend.com",
-            full_name="System Administrator",
-            user_type="admin",
-            hashed_password=hashed_password,
-            is_active=True
-        )
-        db.add(default_admin)
-        await db.commit()
-        print("Default admin created: admin/admin123")
+    db.add(user)
+    await db.flush()
+    return user
 
 # ========== Student Management ==========
-@router.post("/students/create", response_model=dict)
+@router.post("/students/create")
 async def create_student(
-    student: CreateStudent,
+    student: StudentCreate,
     admin_token: str,
     db: AsyncSession = Depends(get_db)
 ):
-    await verify_admin_token(admin_token)
+    await verify_admin(admin_token)
     
-    # Check if user exists
-    existing = await db.execute(
-        select(User).where(User.user_id == student.student_id)
-    )
+    existing = await db.execute(select(User).where(User.user_id == student.student_id))
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Student ID already exists")
     
-    # Check email
-    email_exists = await db.execute(
-        select(User).where(User.email == student.email)
+    user = await create_user_account(
+        db, student.student_id, student.email, student.full_name, 
+        "student", student.password
     )
-    if email_exists.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="Email already exists")
     
-    # Create user account
-    new_user = User(
-        user_id=student.student_id,
-        email=student.email,
-        full_name=student.full_name,
-        user_type="student",
-        hashed_password="",  # Students login without password
-        is_active=True
-    )
-    db.add(new_user)
-    await db.flush()  # Get the user id
-    
-    # Create student profile
-    new_student = StudentProfile(
+    student_profile = StudentProfile(
         student_id=student.student_id,
         roll_number=student.roll_number,
-        department=student.department,
+        course=student.course,
         year=student.year,
         semester=student.semester,
-        phone_number=student.phone_number,
-        user_id=new_user.id
+        phone_number=student.phone_number
     )
-    db.add(new_student)
+    db.add(student_profile)
     await db.commit()
     
-    return {"message": f"Student {student.student_id} created successfully", "student_id": student.student_id}
+    return {"message": f"Student {student.student_id} created successfully"}
 
-@router.get("/students/list", response_model=dict)
+@router.get("/students/list")
 async def list_students(
     admin_token: str,
     db: AsyncSession = Depends(get_db),
     skip: int = 0,
-    limit: int = 100,
-    department: Optional[str] = None
+    limit: int = 100
 ):
-    await verify_admin_token(admin_token)
+    await verify_admin(admin_token)
     
-    query = select(StudentProfile)
-    if department:
-        query = query.where(StudentProfile.department == department)
-    
-    result = await db.execute(query.offset(skip).limit(limit))
+    result = await db.execute(select(StudentProfile).offset(skip).limit(limit))
     students = result.scalars().all()
     
-    # Get user details for each student
     student_list = []
     for student in students:
-        user_result = await db.execute(
-            select(User).where(User.id == student.user_id)
-        )
+        user_result = await db.execute(select(User).where(User.user_id == student.student_id))
         user = user_result.scalar_one_or_none()
+        
         student_list.append({
             "student_id": student.student_id,
             "email": user.email if user else "",
             "full_name": user.full_name if user else "",
             "roll_number": student.roll_number,
-            "department": student.department,
+            "course": student.course,
             "year": student.year,
             "semester": student.semester,
-            "phone_number": student.phone_number,
-            "is_active": user.is_active if user else True
+            "phone_number": student.phone_number
         })
     
     return {"students": student_list, "total": len(student_list)}
-
-@router.put("/students/{student_id}/toggle-status")
-async def toggle_student_status(
-    student_id: str,
-    admin_token: str,
-    db: AsyncSession = Depends(get_db)
-):
-    await verify_admin_token(admin_token)
-    
-    result = await db.execute(
-        select(User).where(User.user_id == student_id)
-    )
-    user = result.scalar_one_or_none()
-    
-    if not user:
-        raise HTTPException(status_code=404, detail="Student not found")
-    
-    user.is_active = not user.is_active
-    await db.commit()
-    
-    return {"message": f"Student {student_id} status updated to {user.is_active}"}
 
 @router.delete("/students/{student_id}")
 async def delete_student(
@@ -209,318 +107,345 @@ async def delete_student(
     admin_token: str,
     db: AsyncSession = Depends(get_db)
 ):
-    await verify_admin_token(admin_token)
+    await verify_admin(admin_token)
     
-    # Delete user and profile
-    user_result = await db.execute(
-        select(User).where(User.user_id == student_id)
-    )
+    user_result = await db.execute(select(User).where(User.user_id == student_id))
     user = user_result.scalar_one_or_none()
     if user:
-        # Delete profile first
-        profile_result = await db.execute(
-            select(StudentProfile).where(StudentProfile.student_id == student_id)
-        )
+        profile_result = await db.execute(select(StudentProfile).where(StudentProfile.student_id == student_id))
         profile = profile_result.scalar_one_or_none()
         if profile:
             await db.delete(profile)
-        
         await db.delete(user)
         await db.commit()
     
     return {"message": f"Student {student_id} deleted"}
 
-# ========== Faculty Management ==========
-@router.post("/faculty/create", response_model=dict)
-async def create_faculty(
-    faculty: CreateFaculty,
+# ========== Manager Management ==========
+@router.post("/managers/create")
+async def create_manager(
+    manager: ManagerCreate,
     admin_token: str,
     db: AsyncSession = Depends(get_db)
 ):
-    await verify_admin_token(admin_token)
+    await verify_admin(admin_token)
     
-    # Check if exists
-    existing = await db.execute(
-        select(User).where(User.user_id == faculty.faculty_id)
-    )
+    existing = await db.execute(select(User).where(User.user_id == manager.manager_id))
     if existing.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="Faculty ID already exists")
+        raise HTTPException(status_code=400, detail="Manager ID already exists")
     
-    # Check email
-    email_exists = await db.execute(
-        select(User).where(User.email == faculty.email)
+    user = await create_user_account(
+        db, manager.manager_id, manager.email, manager.full_name, 
+        "manager", manager.password
     )
-    if email_exists.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="Email already exists")
     
-    # Create user
-    hashed_password = pwd_context.hash(faculty.password)
-    new_user = User(
-        user_id=faculty.faculty_id,
-        email=faculty.email,
-        full_name=faculty.full_name,
-        user_type="faculty",
-        hashed_password=hashed_password,
-        is_active=True
+    manager_profile = ManagerProfile(
+        manager_id=manager.manager_id,
+        designation=manager.designation,
+        phone_number=manager.phone_number,
+        department=manager.department
     )
-    db.add(new_user)
-    await db.flush()
-    
-    # Create faculty profile
-    new_faculty = FacultyProfile(
-        faculty_id=faculty.faculty_id,
-        department=faculty.department,
-        designation=faculty.designation,
-        phone_number=faculty.phone_number,
-        user_id=new_user.id
-    )
-    db.add(new_faculty)
+    db.add(manager_profile)
     await db.commit()
     
-    return {"message": f"Faculty {faculty.faculty_id} created successfully", "faculty_id": faculty.faculty_id}
+    return {"message": f"Manager {manager.manager_id} created successfully"}
 
-@router.get("/faculty/list", response_model=dict)
-async def list_faculty(
+@router.get("/managers/list")
+async def list_managers(
     admin_token: str,
-    db: AsyncSession = Depends(get_db),
-    department: Optional[str] = None
+    db: AsyncSession = Depends(get_db)
 ):
-    await verify_admin_token(admin_token)
+    await verify_admin(admin_token)
     
-    query = select(FacultyProfile)
-    if department:
-        query = query.where(FacultyProfile.department == department)
+    result = await db.execute(select(ManagerProfile))
+    managers = result.scalars().all()
     
-    result = await db.execute(query)
-    faculty_list = result.scalars().all()
-    
-    faculty_data = []
-    for faculty in faculty_list:
-        user_result = await db.execute(
-            select(User).where(User.id == faculty.user_id)
-        )
+    manager_list = []
+    for manager in managers:
+        user_result = await db.execute(select(User).where(User.user_id == manager.manager_id))
         user = user_result.scalar_one_or_none()
-        faculty_data.append({
-            "faculty_id": faculty.faculty_id,
+        
+        manager_list.append({
+            "manager_id": manager.manager_id,
             "email": user.email if user else "",
             "full_name": user.full_name if user else "",
-            "department": faculty.department,
-            "designation": faculty.designation,
-            "phone_number": faculty.phone_number,
+            "designation": manager.designation,
+            "department": manager.department,
+            "phone_number": manager.phone_number,
             "is_active": user.is_active if user else True
         })
     
-    return {"faculty": faculty_data}
+    return {"managers": manager_list}
 
-@router.delete("/faculty/{faculty_id}")
-async def delete_faculty(
-    faculty_id: str,
+@router.delete("/managers/{manager_id}")
+async def delete_manager(
+    manager_id: str,
     admin_token: str,
     db: AsyncSession = Depends(get_db)
 ):
-    await verify_admin_token(admin_token)
+    await verify_admin(admin_token)
     
-    user_result = await db.execute(
-        select(User).where(User.user_id == faculty_id)
-    )
+    user_result = await db.execute(select(User).where(User.user_id == manager_id))
     user = user_result.scalar_one_or_none()
     if user:
-        profile_result = await db.execute(
-            select(FacultyProfile).where(FacultyProfile.faculty_id == faculty_id)
-        )
+        profile_result = await db.execute(select(ManagerProfile).where(ManagerProfile.manager_id == manager_id))
         profile = profile_result.scalar_one_or_none()
         if profile:
             await db.delete(profile)
-        
         await db.delete(user)
         await db.commit()
     
-    return {"message": f"Faculty {faculty_id} deleted"}
+    return {"message": f"Manager {manager_id} deleted"}
 
-# ========== Dashboard & Statistics ==========
+# ========== Company Management ==========
+@router.post("/companies/create")
+async def create_company(
+    company: CompanyCreate,
+    admin_token: str,
+    db: AsyncSession = Depends(get_db)
+):
+    await verify_admin(admin_token)
+    
+    new_company = Company(
+        name=company.name,
+        address=company.address,
+        latitude=company.latitude,
+        longitude=company.longitude,
+        radius_meters=company.radius_meters,
+        created_by="admin"
+    )
+    db.add(new_company)
+    await db.commit()
+    await db.refresh(new_company)
+    
+    return {"message": f"Company {company.name} created", "company_id": new_company.id}
+
+@router.get("/companies/list")
+async def list_companies(
+    admin_token: str,
+    db: AsyncSession = Depends(get_db)
+):
+    await verify_admin(admin_token)
+    
+    result = await db.execute(select(Company))
+    companies = result.scalars().all()
+    
+    return {"companies": [{"id": c.id, "name": c.name, "address": c.address, 
+                          "latitude": c.latitude, "longitude": c.longitude, 
+                          "radius": c.radius_meters} for c in companies]}
+
+# ========== Internship Management ==========
+
+@router.post("/internships/create")
+async def create_internship(
+    internship_data: dict,
+    admin_token: str,
+    db: AsyncSession = Depends(get_db)
+):
+    await verify_admin(admin_token)
+    
+    internship_id = generate_internship_id()
+    
+    # Calculate duration from start and end time
+    start_time = datetime.strptime(internship_data.get("daily_start_time"), "%H:%M").time()
+    end_time = datetime.strptime(internship_data.get("daily_end_time"), "%H:%M").time()
+    
+    # Calculate total minutes
+    start_minutes = start_time.hour * 60 + start_time.minute
+    end_minutes = end_time.hour * 60 + end_time.minute
+    total_minutes = end_minutes - start_minutes
+    
+    # For demo mode, use the specified interval
+    is_test_mode = internship_data.get("is_test_mode", 0)
+    proof_interval = internship_data.get("proof_interval_minutes", 60)
+    
+    print(f"Creating internship: {internship_data.get('role_name')}")
+    print(f"  Start: {start_time}, End: {end_time}")
+    print(f"  Total duration: {total_minutes} minutes")
+    print(f"  Test mode: {is_test_mode}, Proof interval: {proof_interval} min")
+    
+    new_internship = Internship(
+        internship_id=internship_id,
+        company_id=internship_data.get("company_id"),
+        role_name=internship_data.get("role_name"),
+        description=internship_data.get("description", ""),
+        manager_id=internship_data.get("manager_id"),
+        start_date=datetime.strptime(internship_data.get("start_date"), "%Y-%m-%d").date(),
+        end_date=datetime.strptime(internship_data.get("end_date"), "%Y-%m-%d").date(),
+        daily_start_time=start_time,
+        daily_end_time=end_time,
+        lunch_break_minutes=internship_data.get("lunch_break_minutes", 60),
+        required_hours_per_day=round(total_minutes / 60, 2),  # Convert to hours
+        min_hours_for_present=round((total_minutes * 0.8) / 60, 2),  # 80% of total
+        status="upcoming",
+        is_test_mode=is_test_mode,
+        test_duration_minutes=total_minutes,
+        proof_interval_minutes=proof_interval
+    )
+    db.add(new_internship)
+    await db.commit()
+    await db.refresh(new_internship)
+    
+    return {
+        "message": "Internship created", 
+        "internship_id": internship_id,
+        "total_minutes": total_minutes,
+        "required_hours": round(total_minutes / 60, 2),
+        "proof_interval": proof_interval
+    }
+
+@router.post("/internships/{internship_id}/activate")
+async def activate_internship(
+    internship_id: str,
+    admin_token: str,
+    db: AsyncSession = Depends(get_db)
+):
+    await verify_admin(admin_token)
+    
+    result = await db.execute(
+        select(Internship).where(Internship.internship_id == internship_id)
+    )
+    internship = result.scalar_one_or_none()
+    
+    if not internship:
+        raise HTTPException(status_code=404, detail="Internship not found")
+    
+    internship.status = "active"
+    await db.commit()
+    
+    return {"message": f"Internship {internship_id} activated"}
+
+@router.post("/internships/{internship_id}/enroll")
+async def enroll_students(
+    internship_id: str,
+    student_ids: List[str],
+    admin_token: str,
+    db: AsyncSession = Depends(get_db)
+):
+    await verify_admin(admin_token)
+    
+    result = await db.execute(
+        select(Internship).where(Internship.internship_id == internship_id)
+    )
+    internship = result.scalar_one_or_none()
+    if not internship:
+        raise HTTPException(status_code=404, detail="Internship not found")
+    
+    for student_id in student_ids:
+        existing = await db.execute(
+            select(InternshipEnrollment).where(
+                and_(
+                    InternshipEnrollment.internship_id == internship.id,
+                    InternshipEnrollment.student_id == student_id
+                )
+            )
+        )
+        if not existing.scalar_one_or_none():
+            enrollment = InternshipEnrollment(
+                internship_id=internship.id,
+                student_id=student_id,
+                status="active"
+            )
+            db.add(enrollment)
+            
+            student_profile = await db.execute(
+                select(StudentProfile).where(StudentProfile.student_id == student_id)
+            )
+            profile = student_profile.scalar_one_or_none()
+            if profile:
+                profile.current_internship_id = internship.id
+    
+    await db.commit()
+    return {"message": f"Enrolled {len(student_ids)} students"}
+
+@router.get("/internships/list")
+async def list_internships(
+    admin_token: str,
+    db: AsyncSession = Depends(get_db)
+):
+    await verify_admin(admin_token)
+    
+    result = await db.execute(select(Internship))
+    internships = result.scalars().all()
+    
+    internship_list = []
+    for internship in internships:
+        company_result = await db.execute(select(Company).where(Company.id == internship.company_id))
+        company = company_result.scalar_one_or_none()
+        
+        count_result = await db.execute(
+            select(func.count(InternshipEnrollment.id)).where(
+                InternshipEnrollment.internship_id == internship.id
+            )
+        )
+        enrolled_count = count_result.scalar() or 0
+        
+        internship_list.append({
+            "internship_id": internship.internship_id,
+            "company_name": company.name if company else "Unknown",
+            "role_name": internship.role_name,
+            "manager_id": internship.manager_id,
+            "start_date": internship.start_date.isoformat(),
+            "end_date": internship.end_date.isoformat(),
+            "status": internship.status,
+            "enrolled_students": enrolled_count,
+            "daily_hours": f"{internship.daily_start_time} - {internship.daily_end_time}",
+            "description": internship.description,
+            "is_test_mode": internship.is_test_mode,
+            "test_duration_minutes": internship.test_duration_minutes,
+            "proof_interval_minutes": internship.proof_interval_minutes
+        })
+    
+    return {"internships": internship_list}
+
+@router.delete("/internships/{internship_id}")
+async def delete_internship(
+    internship_id: str,
+    admin_token: str,
+    db: AsyncSession = Depends(get_db)
+):
+    await verify_admin(admin_token)
+    
+    result = await db.execute(
+        select(Internship).where(Internship.internship_id == internship_id)
+    )
+    internship = result.scalar_one_or_none()
+    
+    if not internship:
+        raise HTTPException(status_code=404, detail="Internship not found")
+    
+    await db.execute(delete(InternshipEnrollment).where(InternshipEnrollment.internship_id == internship.id))
+    await db.execute(delete(DailyAttendance).where(DailyAttendance.internship_id == internship.id))
+    await db.execute(delete(AttendanceProof).where(AttendanceProof.internship_id == internship.id))
+    await db.execute(update(StudentProfile).where(StudentProfile.current_internship_id == internship.id).values(current_internship_id=None))
+    await db.delete(internship)
+    await db.commit()
+    
+    return {"message": f"Internship {internship_id} deleted"}
+
 @router.get("/dashboard/stats")
 async def get_admin_stats(
     admin_token: str,
     db: AsyncSession = Depends(get_db)
 ):
-    await verify_admin_token(admin_token)
+    await verify_admin(admin_token)
     
-    # Get counts
-    students_result = await db.execute(select(func.count(StudentProfile.id)))
-    total_students = students_result.scalar()
-    
-    faculty_result = await db.execute(select(func.count(FacultyProfile.id)))
-    total_faculty = faculty_result.scalar()
-    
-    sessions_result = await db.execute(select(func.count(SessionModel.id)))
-    total_sessions = sessions_result.scalar()
-    
-    attendance_result = await db.execute(select(func.count(SessionAttendance.id)))
-    total_attendances = attendance_result.scalar()
-    
-    # Get department wise stats
-    dept_stats = await db.execute(
-        select(StudentProfile.department, func.count(StudentProfile.id))
-        .group_by(StudentProfile.department)
+    students_count = await db.execute(select(func.count(StudentProfile.id)))
+    managers_count = await db.execute(select(func.count(ManagerProfile.id)))
+    active_internships = await db.execute(
+        select(func.count(Internship.id)).where(Internship.status == "active")
     )
-    departments = [{"department": dept, "count": count} for dept, count in dept_stats.all()]
+    total_internships = await db.execute(select(func.count(Internship.id)))
     
-    # Recent sessions
-    recent_sessions_result = await db.execute(
-        select(SessionModel).order_by(SessionModel.start_time.desc()).limit(5)
+    today = date.today()
+    today_attendance = await db.execute(
+        select(func.count(DailyAttendance.id)).where(DailyAttendance.date == today)
     )
-    recent_sessions = recent_sessions_result.scalars().all()
     
     return {
-        "total_students": total_students or 0,
-        "total_faculty": total_faculty or 0,
-        "total_sessions": total_sessions or 0,
-        "total_attendances": total_attendances or 0,
-        "departments": departments,
-        "recent_sessions": [
-            {
-                "session_nonce": s.session_nonce,
-                "faculty_id": s.faculty_id,
-                "start_time": s.start_time.isoformat(),
-                "end_time": s.end_time.isoformat()
-            } for s in recent_sessions
-        ]
+        "total_students": students_count.scalar() or 0,
+        "total_managers": managers_count.scalar() or 0,
+        "active_internships": active_internships.scalar() or 0,
+        "total_internships": total_internships.scalar() or 0,
+        "today_attendance": today_attendance.scalar() or 0
     }
-
-@router.get("/sessions/all")
-async def get_all_sessions(
-    admin_token: str,
-    db: AsyncSession = Depends(get_db),
-    limit: int = 50,
-    department: Optional[str] = None
-):
-    await verify_admin_token(admin_token)
-    
-    query = select(SessionModel).order_by(SessionModel.start_time.desc())
-    if department:
-        query = query.where(SessionModel.department == department)
-    
-    result = await db.execute(query.limit(limit))
-    sessions = result.scalars().all()
-    
-    # Get attendance stats for each session
-    session_stats = []
-    for session in sessions:
-        attendance_result = await db.execute(
-            select(func.count(SessionAttendance.id)).where(
-                SessionAttendance.session_nonce == session.session_nonce
-            )
-        )
-        attendance_count = attendance_result.scalar() or 0
-        
-        session_stats.append({
-            "session_nonce": session.session_nonce,
-            "faculty_id": session.faculty_id,
-            "start_time": session.start_time.isoformat(),
-            "end_time": session.end_time.isoformat(),
-            "class_center": {"lat": session.class_center_lat, "lng": session.class_center_lng},
-            "radius_meters": session.radius_meters,
-            "attendance_count": attendance_count,
-            "department": session.department
-        })
-    
-    return {"sessions": session_stats, "total": len(session_stats)}
-
-@router.get("/session/{nonce}/attendance")
-async def get_session_attendance(
-    nonce: str,
-    admin_token: str,
-    db: AsyncSession = Depends(get_db)
-):
-    await verify_admin_token(admin_token)
-    
-    # Get session details
-    session_result = await db.execute(
-        select(SessionModel).where(SessionModel.session_nonce == nonce)
-    )
-    session = session_result.scalar_one_or_none()
-    
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-    
-    # Get attendance records
-    result = await db.execute(
-        select(SessionAttendance).where(SessionAttendance.session_nonce == nonce)
-    )
-    attendance_records = result.scalars().all()
-    
-    # Get student details for each record
-    detailed_records = []
-    for record in attendance_records:
-        student_result = await db.execute(
-            select(StudentProfile).where(StudentProfile.student_id == record.student_id)
-        )
-        student = student_result.scalar_one_or_none()
-        
-        user_result = await db.execute(
-            select(User).where(User.user_id == record.student_id)
-        )
-        user = user_result.scalar_one_or_none()
-        
-        detailed_records.append({
-            "student_id": record.student_id,
-            "student_name": user.full_name if user else "Unknown",
-            "roll_number": student.roll_number if student else "N/A",
-            "timestamp": record.timestamp.isoformat(),
-            "location": {"lat": record.location_lat, "lng": record.location_lng} if record.location_lat else None,
-            "verified": record.is_verified
-        })
-    
-    return {
-        "session": {
-            "nonce": session.session_nonce,
-            "faculty_id": session.faculty_id,
-            "start_time": session.start_time.isoformat(),
-            "end_time": session.end_time.isoformat()
-        },
-        "attendance": detailed_records,
-        "total": len(detailed_records)
-    }
-
-@router.get("/export/session/{nonce}/csv")
-async def export_attendance_csv(
-    nonce: str,
-    admin_token: str,
-    db: AsyncSession = Depends(get_db)
-):
-    await verify_admin_token(admin_token)
-    
-    # Get attendance data
-    result = await db.execute(
-        select(SessionAttendance).where(SessionAttendance.session_nonce == nonce)
-    )
-    records = result.scalars().all()
-    
-    # Create CSV content
-    import csv
-    from io import StringIO
-    
-    output = StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["Student ID", "Student Name", "Timestamp", "Location Lat", "Location Lng", "Verified"])
-    
-    for record in records:
-        user_result = await db.execute(
-            select(User).where(User.user_id == record.student_id)
-        )
-        user = user_result.scalar_one_or_none()
-        
-        writer.writerow([
-            record.student_id,
-            user.full_name if user else "Unknown",
-            record.timestamp.isoformat(),
-            record.location_lat or "",
-            record.location_lng or "",
-            record.is_verified
-        ])
-    
-    return Response(
-        content=output.getvalue(),
-        media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename=attendance_{nonce}.csv"}
-    )

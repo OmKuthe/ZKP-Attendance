@@ -12,13 +12,14 @@
   "dependencies": {
     "@heroicons/react": "^2.2.0",
     "@react-google-maps/api": "^2.20.8",
+    "@yudiel/react-qr-scanner": "^2.5.1",
     "axios": "^1.16.0",
     "html5-qrcode": "^2.3.8",
     "lucide-react": "^1.14.0",
     "qrcode": "^1.5.4",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
-    "react-qr-reader": "^3.0.0-beta-1",
+    "react-hot-toast": "^2.6.0",
     "react-router-dom": "^7.14.2",
     "snarkjs": "^0.7.6"
   },
