@@ -15,6 +15,10 @@ from datetime import datetime, date, timedelta
 from passlib.context import CryptContext
 from typing import Optional, List
 import json
+import pandas as pd
+import io
+from fastapi import UploadFile, File
+
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -70,6 +74,83 @@ async def create_student(
     await db.commit()
     
     return {"message": f"Student {student.student_id} created successfully"}
+
+@router.post("/students/bulk-upload")
+async def bulk_upload_students(
+    file: UploadFile = File(...),
+    admin_token: str = Depends(verify_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """Bulk upload students from Excel/CSV file"""
+    
+    # Read the file
+    contents = await file.read()
+    
+    # Determine file type and read accordingly
+    if file.filename.endswith('.csv'):
+        df = pd.read_csv(io.StringIO(contents.decode('utf-8')))
+    else:  # Assume Excel
+        df = pd.read_excel(io.BytesIO(contents))
+    
+    # Expected columns (matching your existing StudentCreate schema)
+    required_columns = ['student_id', 'email', 'full_name', 'roll_number', 
+                        'course', 'year', 'semester', 'phone_number', 'department']
+    
+    # Validate columns
+    missing_cols = [col for col in required_columns if col not in df.columns]
+    if missing_cols:
+        raise HTTPException(status_code=400, detail=f"Missing columns: {missing_cols}")
+    
+    created_count = 0
+    errors = []
+    
+    for idx, row in df.iterrows():
+        try:
+            student_id = str(row['student_id']).strip()
+            
+            # Check if student already exists
+            existing = await db.execute(
+                select(User).where(User.user_id == student_id)
+            )
+            if existing.scalar_one_or_none():
+                errors.append(f"Row {idx+2}: Student ID {student_id} already exists")
+                continue
+            
+            # Create user account (optional password can be empty)
+            user = User(
+                user_id=student_id,
+                email=str(row['email']),
+                full_name=str(row['full_name']),
+                user_type="student",
+                department=str(row.get('department', '')),
+                hashed_password="",  # No password for students
+                is_active=True
+            )
+            db.add(user)
+            await db.flush()
+            
+            # Create student profile
+            student_profile = StudentProfile(
+                student_id=student_id,
+                roll_number=str(row['roll_number']),
+                course=str(row['course']),
+                year=int(row['year']),
+                semester=int(row['semester']),
+                phone_number=str(row['phone_number'])
+            )
+            db.add(student_profile)
+            created_count += 1
+            
+        except Exception as e:
+            errors.append(f"Row {idx+2}: {str(e)}")
+    
+    await db.commit()
+    
+    return {
+        "message": f"Successfully created {created_count} students",
+        "created": created_count,
+        "errors": errors
+    }
 
 @router.get("/students/list")
 async def list_students(
@@ -259,10 +340,15 @@ async def create_internship(
     is_test_mode = internship_data.get("is_test_mode", 0)
     proof_interval = internship_data.get("proof_interval_minutes", 60)
     
+    # Get stipend information (NEW)
+    is_paid = internship_data.get("is_paid", False)
+    stipend_amount = internship_data.get("stipend_amount", 0) if is_paid else 0
+    
     print(f"Creating internship: {internship_data.get('role_name')}")
     print(f"  Start: {start_time}, End: {end_time}")
     print(f"  Total duration: {total_minutes} minutes")
     print(f"  Test mode: {is_test_mode}, Proof interval: {proof_interval} min")
+    print(f"  Paid: {is_paid}, Stipend: {stipend_amount}")
     
     new_internship = Internship(
         internship_id=internship_id,
@@ -275,12 +361,14 @@ async def create_internship(
         daily_start_time=start_time,
         daily_end_time=end_time,
         lunch_break_minutes=internship_data.get("lunch_break_minutes", 60),
-        required_hours_per_day=round(total_minutes / 60, 2),  # Convert to hours
-        min_hours_for_present=round((total_minutes * 0.8) / 60, 2),  # 80% of total
+        required_hours_per_day=round(total_minutes / 60, 2),
+        min_hours_for_present=round((total_minutes * 0.8) / 60, 2),
         status="upcoming",
         is_test_mode=is_test_mode,
         test_duration_minutes=total_minutes,
-        proof_interval_minutes=proof_interval
+        proof_interval_minutes=proof_interval,
+        is_paid=is_paid,  # NEW
+        stipend_amount=stipend_amount  # NEW - you need to add this column to Internship model
     )
     db.add(new_internship)
     await db.commit()
@@ -291,8 +379,11 @@ async def create_internship(
         "internship_id": internship_id,
         "total_minutes": total_minutes,
         "required_hours": round(total_minutes / 60, 2),
-        "proof_interval": proof_interval
+        "proof_interval": proof_interval,
+        "is_paid": is_paid,
+        "stipend_amount": stipend_amount
     }
+
 
 @router.post("/internships/{internship_id}/activate")
 async def activate_internship(
@@ -315,6 +406,7 @@ async def activate_internship(
     
     return {"message": f"Internship {internship_id} activated"}
 
+
 @router.post("/internships/{internship_id}/enroll")
 async def enroll_students(
     internship_id: str,
@@ -331,8 +423,42 @@ async def enroll_students(
     if not internship:
         raise HTTPException(status_code=404, detail="Internship not found")
     
+    enrolled = []
+    failed = []
+    
     for student_id in student_ids:
-        existing = await db.execute(
+        # Check if student exists
+        student_result = await db.execute(
+            select(StudentProfile).where(StudentProfile.student_id == student_id)
+        )
+        student = student_result.scalar_one_or_none()
+        if not student:
+            failed.append(f"{student_id} (student not found)")
+            continue
+        
+        # CHECK: Does student already have an active internship?
+        # Look for any active enrollment for this student
+        existing_enrollment = await db.execute(
+            select(InternshipEnrollment).where(
+                and_(
+                    InternshipEnrollment.student_id == student_id,
+                    InternshipEnrollment.status == "active"
+                )
+            )
+        )
+        existing = existing_enrollment.scalar_one_or_none()
+        
+        if existing:
+            # Get the internship name for better error message
+            existing_internship = await db.execute(
+                select(Internship).where(Internship.id == existing.internship_id)
+            )
+            existing_int = existing_internship.scalar_one_or_none()
+            failed.append(f"{student_id} (already has internship: {existing_int.role_name if existing_int else 'Unknown'})")
+            continue
+        
+        # Check if already enrolled in THIS internship
+        existing_this = await db.execute(
             select(InternshipEnrollment).where(
                 and_(
                     InternshipEnrollment.internship_id == internship.id,
@@ -340,23 +466,134 @@ async def enroll_students(
                 )
             )
         )
-        if not existing.scalar_one_or_none():
-            enrollment = InternshipEnrollment(
-                internship_id=internship.id,
-                student_id=student_id,
-                status="active"
-            )
-            db.add(enrollment)
-            
-            student_profile = await db.execute(
-                select(StudentProfile).where(StudentProfile.student_id == student_id)
-            )
-            profile = student_profile.scalar_one_or_none()
-            if profile:
-                profile.current_internship_id = internship.id
+        if existing_this.scalar_one_or_none():
+            failed.append(f"{student_id} (already enrolled in this internship)")
+            continue
+        
+        # Create enrollment
+        enrollment = InternshipEnrollment(
+            internship_id=internship.id,
+            student_id=student_id,
+            status="active"
+        )
+        db.add(enrollment)
+        
+        # Update student's current internship
+        student.current_internship_id = internship.id
+        enrolled.append(student_id)
     
     await db.commit()
-    return {"message": f"Enrolled {len(student_ids)} students"}
+    
+    return {
+        "message": f"Enrolled {len(enrolled)} students",
+        "enrolled": enrolled,
+        "failed": failed
+    }
+
+@router.post("/internships/{internship_id}/bulk-enroll")
+async def bulk_enroll_students(
+    internship_id: str,
+    file: UploadFile = File(...),
+    admin_token: str = Depends(verify_admin),
+    db: AsyncSession = Depends(get_db)
+):
+    """Bulk enroll students from Excel/CSV file containing student_ids"""
+    await verify_admin(admin_token)
+    
+    # Read the file
+    contents = await file.read()
+    
+    # Determine file type and read accordingly
+    if file.filename.endswith('.csv'):
+        df = pd.read_csv(io.StringIO(contents.decode('utf-8')))
+    else:  # Assume Excel
+        df = pd.read_excel(io.BytesIO(contents))
+    
+    # Expected columns
+    if 'student_id' not in df.columns:
+        raise HTTPException(status_code=400, detail="File must contain 'student_id' column")
+    
+    # Get internship
+    result = await db.execute(
+        select(Internship).where(Internship.internship_id == internship_id)
+    )
+    internship = result.scalar_one_or_none()
+    if not internship:
+        raise HTTPException(status_code=404, detail="Internship not found")
+    
+    enrolled = []
+    failed = []
+    
+    for idx, row in df.iterrows():
+        student_id = str(row['student_id']).strip()
+        
+        # Skip empty rows
+        if not student_id or student_id == 'nan':
+            failed.append(f"Row {idx+2}: Empty student ID")
+            continue
+        
+        # Check if student exists
+        student_result = await db.execute(
+            select(StudentProfile).where(StudentProfile.student_id == student_id)
+        )
+        student = student_result.scalar_one_or_none()
+        if not student:
+            failed.append(f"Row {idx+2}: Student '{student_id}' not found")
+            continue
+        
+        # CHECK: Does student already have an active internship?
+        existing_enrollment = await db.execute(
+            select(InternshipEnrollment).where(
+                and_(
+                    InternshipEnrollment.student_id == student_id,
+                    InternshipEnrollment.status == "active"
+                )
+            )
+        )
+        existing = existing_enrollment.scalar_one_or_none()
+        
+        if existing:
+            existing_internship = await db.execute(
+                select(Internship).where(Internship.id == existing.internship_id)
+            )
+            existing_int = existing_internship.scalar_one_or_none()
+            failed.append(f"Row {idx+2}: Student '{student_id}' already has internship: {existing_int.role_name if existing_int else 'Unknown'}")
+            continue
+        
+        # Check if already enrolled in THIS internship
+        existing_this = await db.execute(
+            select(InternshipEnrollment).where(
+                and_(
+                    InternshipEnrollment.internship_id == internship.id,
+                    InternshipEnrollment.student_id == student_id
+                )
+            )
+        )
+        if existing_this.scalar_one_or_none():
+            failed.append(f"Row {idx+2}: Student '{student_id}' already enrolled in this internship")
+            continue
+        
+        # Create enrollment
+        enrollment = InternshipEnrollment(
+            internship_id=internship.id,
+            student_id=student_id,
+            status="active"
+        )
+        db.add(enrollment)
+        
+        # Update student's current internship
+        student.current_internship_id = internship.id
+        enrolled.append(student_id)
+    
+    await db.commit()
+    
+    return {
+        "message": f"Successfully enrolled {len(enrolled)} students",
+        "enrolled_count": len(enrolled),
+        "failed_count": len(failed),
+        "failed_details": failed
+    }
+
 
 @router.get("/internships/list")
 async def list_internships(
@@ -393,10 +630,13 @@ async def list_internships(
             "description": internship.description,
             "is_test_mode": internship.is_test_mode,
             "test_duration_minutes": internship.test_duration_minutes,
-            "proof_interval_minutes": internship.proof_interval_minutes
+            "proof_interval_minutes": internship.proof_interval_minutes,
+            "is_paid": getattr(internship, 'is_paid', False),  # NEW
+            "stipend_amount": getattr(internship, 'stipend_amount', 0)  # NEW
         })
     
     return {"internships": internship_list}
+
 
 @router.delete("/internships/{internship_id}")
 async def delete_internship(

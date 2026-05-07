@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import { 
   PlusIcon, TrashIcon, ArrowLeftIcon, BriefcaseIcon,
   CalendarIcon, ClockIcon, UsersIcon, XMarkIcon, CheckIcon,
-  PlayIcon, StopIcon, CogIcon
+  PlayIcon, StopIcon, CogIcon, DocumentArrowUpIcon, CurrencyDollarIcon
 } from '@heroicons/react/24/outline'
 import api from '../../services/api'
 import toast from 'react-hot-toast'
@@ -17,11 +17,13 @@ const InternshipManagement = () => {
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
   const [showEnrollModal, setShowEnrollModal] = useState(false)
+  const [showBulkEnrollModal, setShowBulkEnrollModal] = useState(false)
   const [selectedInternship, setSelectedInternship] = useState(null)
   const [selectedStudents, setSelectedStudents] = useState([])
   const [enableAutoFetch, setEnableAutoFetch] = useState(false)
   const [fetchInterval, setFetchInterval] = useState(1)
   const [calculatedDuration, setCalculatedDuration] = useState(0)
+  const [uploading, setUploading] = useState(false)
   const [formData, setFormData] = useState({
     company_id: '',
     role_name: '',
@@ -31,7 +33,9 @@ const InternshipManagement = () => {
     end_date: '',
     daily_start_time: '09:00',
     daily_end_time: '17:00',
-    lunch_break_minutes: 60
+    lunch_break_minutes: 60,
+    is_paid: false,
+    stipend_amount: 0
   })
 
   useEffect(() => {
@@ -76,7 +80,7 @@ const InternshipManagement = () => {
       let endMinutes = endHour * 60 + endMin
       
       let duration = endMinutes - startMinutes
-      if (duration < 0) duration += 24 * 60 // Handle overnight shifts
+      if (duration < 0) duration += 24 * 60
       
       setCalculatedDuration(duration)
     }
@@ -108,7 +112,8 @@ const InternshipManagement = () => {
         params: { admin_token: 'admin_secret_key_2026' }
       })
       
-      toast.success(`Internship created! Duration: ${duration} minutes, Auto-fetch every ${fetchInterval} min${enableAutoFetch ? '' : ' (disabled)'}`)
+      const stipendMsg = formData.is_paid ? `, Stipend: ₹${formData.stipend_amount}` : ''
+      toast.success(`Internship created! Duration: ${duration} minutes${stipendMsg}`)
       setShowModal(false)
       resetForm()
       fetchData()
@@ -127,7 +132,9 @@ const InternshipManagement = () => {
       end_date: '',
       daily_start_time: '09:00',
       daily_end_time: '17:00',
-      lunch_break_minutes: 60
+      lunch_break_minutes: 60,
+      is_paid: false,
+      stipend_amount: 0
     })
     setEnableAutoFetch(false)
     setFetchInterval(1)
@@ -167,16 +174,72 @@ const InternshipManagement = () => {
     }
 
     try {
-      await api.post(`/api/admin/internships/${selectedInternship.internship_id}/enroll`, selectedStudents, {
+      const response = await api.post(`/api/admin/internships/${selectedInternship.internship_id}/enroll`, selectedStudents, {
         params: { admin_token: 'admin_secret_key_2026' }
       })
-      toast.success(`Enrolled ${selectedStudents.length} students`)
+      
+      // Check if there were any failed enrollments
+      if (response.data.failed && response.data.failed.length > 0) {
+        toast.warning(`Enrolled ${response.data.enrolled || selectedStudents.length - response.data.failed.length} students. ${response.data.failed.length} failed: ${response.data.failed.join(', ')}`)
+      } else {
+        toast.success(`Enrolled ${selectedStudents.length} students successfully!`)
+      }
+      
       setShowEnrollModal(false)
       setSelectedStudents([])
       fetchData()
     } catch (error) {
-      toast.error('Failed to enroll')
+      toast.error(error.response?.data?.detail || 'Failed to enroll')
     }
+  }
+
+  const handleBulkEnrollUpload = async (e) => {
+    const file = e.target.files[0]
+    if (!file || !selectedInternship) return
+
+    const formData = new FormData()
+    formData.append('file', file)
+
+    setUploading(true)
+    try {
+      const response = await api.post(`/api/admin/internships/${selectedInternship.internship_id}/bulk-enroll`, formData, {
+        params: { admin_token: 'admin_secret_key_2026' },
+        headers: { 'Content-Type': 'multipart/form-data' }
+      })
+      
+      const { enrolled_count, failed_count, failed_details } = response.data
+      
+      if (enrolled_count > 0) {
+        toast.success(`✅ Successfully enrolled ${enrolled_count} students!`)
+      }
+      
+      if (failed_count > 0) {
+        console.log('Failed enrollments:', failed_details)
+        toast.error(`⚠️ Failed to enroll ${failed_count} students. Check console for details.`)
+      }
+      
+      setShowBulkEnrollModal(false)
+      fetchData()
+    } catch (error) {
+      console.error('Bulk enrollment error:', error)
+      toast.error(error.response?.data?.detail || 'Failed to upload file')
+    } finally {
+      setUploading(false)
+      e.target.value = ''
+    }
+  }
+
+  const downloadEnrollmentTemplate = () => {
+    const csvContent = 'student_id\nSTU001\nSTU002\nSTU003'
+    
+    const blob = new Blob([csvContent], { type: 'text/csv' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'enrollment_template.csv'
+    a.click()
+    URL.revokeObjectURL(url)
+    toast.success('Template downloaded!')
   }
 
   const toggleStudentSelection = (studentId) => {
@@ -243,6 +306,11 @@ const InternshipManagement = () => {
                         <BriefcaseIcon className="h-5 w-5 text-indigo-600" />
                         <h3 className="text-lg font-semibold">{internship.company_name} - {internship.role_name}</h3>
                         {getStatusBadge(internship.status)}
+                        {internship.is_paid && internship.stipend_amount > 0 && (
+                          <span className="px-2 py-1 text-xs rounded-full bg-yellow-100 text-yellow-800">
+                            💰 ₹{internship.stipend_amount}/month
+                          </span>
+                        )}
                         {internship.is_test_mode && (
                           <span className="px-2 py-1 text-xs rounded-full bg-purple-100 text-purple-800">
                             ⚡ Auto-fetch: {internship.proof_interval_minutes}min
@@ -272,7 +340,7 @@ const InternshipManagement = () => {
                   <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-sm">
                     <div className="flex items-center"><CalendarIcon className="h-4 w-4 text-gray-400 mr-2" />{internship.start_date} to {internship.end_date}</div>
                     <div className="flex items-center"><ClockIcon className="h-4 w-4 text-gray-400 mr-2" />{internship.daily_hours}</div>
-                    <div className="flex items-center"><CogIcon className="h-4 w-4 text-gray-400 mr-2" />Duration: {formatDuration(internship.duration_minutes)}</div>
+                    <div className="flex items-center"><CogIcon className="h-4 w-4 text-gray-400 mr-2" />Duration: {formatDuration(internship.test_duration_minutes)}</div>
                     <div className="flex items-center"><UsersIcon className="h-4 w-4 text-gray-400 mr-2" />{internship.enrolled_students} students</div>
                   </div>
                   
@@ -362,6 +430,44 @@ const InternshipManagement = () => {
                     className="w-full p-2 border rounded-md" 
                   />
                 </div>
+              </div>
+              
+              {/* Paid Internship Section */}
+              <div className="border rounded-lg p-4 bg-gray-50">
+                <label className="flex items-center gap-3 cursor-pointer mb-3">
+                  <input 
+                    type="checkbox" 
+                    checked={formData.is_paid} 
+                    onChange={(e) => setFormData({...formData, is_paid: e.target.checked})} 
+                    className="w-5 h-5 text-indigo-600 rounded" 
+                  />
+                  <div>
+                    <span className="font-medium text-gray-700">Paid Internship</span>
+                    <p className="text-xs text-gray-500">Student will receive stipend/salary</p>
+                  </div>
+                </label>
+                
+                {formData.is_paid && (
+                  <div className="ml-7">
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      Stipend Amount (₹ per month) *
+                    </label>
+                    <div className="relative">
+                      <span className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-500">₹</span>
+                      <input 
+                        type="number" 
+                        min="0" 
+                        step="1000"
+                        placeholder="e.g., 15000" 
+                        value={formData.stipend_amount} 
+                        onChange={(e) => setFormData({...formData, stipend_amount: parseInt(e.target.value) || 0})} 
+                        className="w-full p-2 pl-7 border rounded-md focus:ring-2 focus:ring-indigo-500" 
+                        required={formData.is_paid}
+                      />
+                    </div>
+                    <p className="text-xs text-gray-500 mt-1">Enter monthly stipend amount in Indian Rupees</p>
+                  </div>
+                )}
               </div>
               
               {/* Date Range */}
@@ -475,7 +581,7 @@ const InternshipManagement = () => {
         </div>
       )}
 
-      {/* Enroll Students Modal */}
+      {/* Enroll Students Modal - Updated with Bulk Upload */}
       {showEnrollModal && selectedInternship && (
         <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto z-50">
           <div className="relative top-20 mx-auto p-5 border w-full max-w-2xl shadow-lg rounded-lg bg-white">
@@ -486,6 +592,17 @@ const InternshipManagement = () => {
               </div>
               <button onClick={() => setShowEnrollModal(false)} className="text-gray-400 hover:text-gray-600">
                 <XMarkIcon className="h-6 w-6" />
+              </button>
+            </div>
+            
+            {/* Bulk Upload Button */}
+            <div className="mb-4">
+              <button
+                onClick={() => { setShowEnrollModal(false); setShowBulkEnrollModal(true); }}
+                className="inline-flex items-center px-3 py-2 bg-green-600 text-white text-sm rounded-md hover:bg-green-700"
+              >
+                <DocumentArrowUpIcon className="h-4 w-4 mr-1" />
+                Bulk Upload (CSV/Excel)
               </button>
             </div>
             
@@ -515,6 +632,66 @@ const InternshipManagement = () => {
               <button onClick={handleEnrollStudents} disabled={selectedStudents.length === 0} className="flex-1 p-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700 disabled:opacity-50">
                 Enroll ({selectedStudents.length})
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk Enrollment Modal */}
+      {showBulkEnrollModal && selectedInternship && (
+        <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50">
+          <div className="relative top-20 mx-auto p-5 border w-full max-w-md shadow-lg rounded-lg bg-white">
+            <div className="flex justify-between items-center mb-4">
+              <div>
+                <h3 className="text-lg font-semibold">Bulk Enroll Students</h3>
+                <p className="text-sm text-gray-600">{selectedInternship.company_name} - {selectedInternship.role_name}</p>
+              </div>
+              <button onClick={() => setShowBulkEnrollModal(false)} className="text-gray-400 hover:text-gray-600">
+                <XMarkIcon className="h-6 w-6" />
+              </button>
+            </div>
+            
+            <div className="space-y-4">
+              <div className="bg-blue-50 p-4 rounded-lg">
+                <p className="text-sm text-blue-800 mb-2">📋 Required Column:</p>
+                <p className="text-xs text-blue-700 font-mono">student_id</p>
+                <p className="text-xs text-gray-500 mt-1">(One student ID per row)</p>
+                <button
+                  onClick={downloadEnrollmentTemplate}
+                  className="mt-3 text-sm text-indigo-600 hover:text-indigo-800"
+                >
+                  📥 Download Template CSV
+                </button>
+              </div>
+              
+              <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center">
+                <input
+                  type="file"
+                  accept=".csv,.xlsx,.xls"
+                  onChange={handleBulkEnrollUpload}
+                  disabled={uploading}
+                  className="hidden"
+                  id="bulk-enroll-input"
+                />
+                <label
+                  htmlFor="bulk-enroll-input"
+                  className="cursor-pointer inline-flex items-center px-4 py-2 bg-indigo-600 text-white rounded-md hover:bg-indigo-700"
+                >
+                  {uploading ? 'Uploading...' : 'Choose File'}
+                </label>
+                <p className="text-xs text-gray-500 mt-2">
+                  Supported formats: CSV, Excel (.xlsx, .xls)
+                </p>
+              </div>
+              
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setShowBulkEnrollModal(false)}
+                  className="flex-1 px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+              </div>
             </div>
           </div>
         </div>

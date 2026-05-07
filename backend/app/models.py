@@ -86,6 +86,8 @@ class Internship(Base):
     test_duration_minutes = Column(Integer, default=60)
     proof_interval_minutes = Column(Integer, default=60)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    is_paid = Column(Integer, default=0)  # 0 = unpaid, 1 = paid
+    stipend_amount = Column(Integer, default=0)  # Monthly stipend amount in INR
 
 class InternshipEnrollment(Base):
     __tablename__ = "internship_enrollments"
