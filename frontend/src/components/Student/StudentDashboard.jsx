@@ -79,25 +79,14 @@ const StudentDashboard = () => {
     }
   }
 
-const fetchTodayProofs = async () => {
-  try {
-    console.log('Fetching today proofs...')
-    const response = await api.get('/api/student/attendance/today')
-    console.log('Today proofs API full response:', response.data)
-    console.log('Proofs array length:', response.data.proofs?.length)
-    console.log('Proofs data:', response.data.proofs)
-    
-    if (response.data.proofs && response.data.proofs.length > 0) {
-      setTodayProofs(response.data.proofs)
-    } else {
-      console.log('No proofs found for today')
-      setTodayProofs([])
+  const fetchTodayProofs = async () => {
+    try {
+      const response = await api.get('/api/student/attendance/today')
+      setTodayProofs(response.data.proofs || [])
+    } catch (error) {
+      console.error('Error fetching proofs:', error)
     }
-  } catch (error) {
-    console.error('Error fetching proofs:', error)
-    toast.error('Failed to load proofs')
   }
-}
 
   const fetchCalendarData = async () => {
     try {
@@ -235,7 +224,7 @@ const fetchTodayProofs = async () => {
             return
           }
           
-          // Submit periodic check (changed from 'hourly' to 'periodic')
+          // Submit periodic check
           navigator.geolocation.getCurrentPosition(
             async (position) => {
               await submitProof('hourly', position)
@@ -333,7 +322,14 @@ const fetchTodayProofs = async () => {
   const remainingMinutes = Math.max(totalMinutes - elapsedMinutes, 0)
   const progressPercent = totalMinutes > 0 ? (elapsedMinutes / totalMinutes) * 100 : 0
   const today = new Date()
-  const todayStr = today.toISOString().split('T')[0]
+
+  // FIX: Use local time getters instead of toISOString() which converts to UTC first.
+  // toISOString() would return the wrong date in IST after 18:30 UTC (= midnight IST).
+  const todayStr = [
+    today.getFullYear(),
+    String(today.getMonth() + 1).padStart(2, '0'),
+    String(today.getDate()).padStart(2, '0')
+  ].join('-')
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -619,15 +615,12 @@ const fetchTodayProofs = async () => {
                   const isToday = dateStr === todayStr
                   
                   let bgColor = 'bg-gray-50 hover:bg-gray-100'
-                  let statusColor = ''
                   
                   if (attendance) {
                     if (attendance.status === 'full_day' || attendance.status === 'partial') {
                       bgColor = 'bg-green-50 hover:bg-green-100'
-                      statusColor = 'border-green-500'
                     } else if (attendance.status === 'absent') {
                       bgColor = 'bg-red-50 hover:bg-red-100'
-                      statusColor = 'border-red-500'
                     }
                   }
                   
@@ -637,7 +630,13 @@ const fetchTodayProofs = async () => {
                       className={`aspect-square p-1 rounded-lg ${bgColor} ${isToday ? 'ring-2 ring-indigo-500' : ''}`}
                     >
                       <div className="flex flex-col items-center justify-center h-full">
-                        <span className={`text-sm font-medium ${attendance && (attendance.status === 'full_day' || attendance.status === 'partial') ? 'text-green-700' : attendance?.status === 'absent' ? 'text-red-700' : 'text-gray-700'}`}>
+                        <span className={`text-sm font-medium ${
+                          attendance && (attendance.status === 'full_day' || attendance.status === 'partial')
+                            ? 'text-green-700'
+                            : attendance?.status === 'absent'
+                            ? 'text-red-700'
+                            : 'text-gray-700'
+                        }`}>
                           {day}
                         </span>
                         {attendance && attendance.hours > 0 && (

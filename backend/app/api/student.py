@@ -48,10 +48,12 @@ async def get_student_dashboard(
     now_utc = datetime.now(pytz.UTC)
     now_ist = now_utc.astimezone(IST)
     current_time = now_ist.time()
+
+    # Use IST date (not UTC date)
+    today = now_ist.date()
     
     # Get active internship
     active_internship = None
-    today = date.today()
     
     if profile and profile.current_internship_id:
         internship_result = await db.execute(
@@ -280,9 +282,12 @@ async def submit_attendance_proof(
         
         # Check if within radius
         is_valid = distance <= company.radius_meters
-        
+
+        # Use IST date for attendance record (fixes UTC date bug)
+        now_ist = datetime.now(IST)
+        today = now_ist.date()
+
         # Get or create daily attendance record
-        today = date.today()
         attendance_result = await db.execute(
             select(DailyAttendance).where(
                 and_(
@@ -328,7 +333,7 @@ async def submit_attendance_proof(
         )
         db.add(new_proof)
         
-        # Update total hours if this is an exit proof
+        # Update total hours and status if this is an exit proof
         if proof.proof_type == "exit" and daily_attendance.first_proof_time:
             total_minutes = (proof_time - daily_attendance.first_proof_time).total_seconds() / 60
             if total_minutes > internship.lunch_break_minutes:
@@ -337,13 +342,26 @@ async def submit_attendance_proof(
             
             daily_attendance.total_minutes = int(total_minutes)
             daily_attendance.total_hours = total_hours
-            
-            if total_hours >= internship.required_hours_per_day:
+
+            # --- 80% proof threshold logic ---
+            # How many proofs were expected over the full session duration?
+            internship_duration_minutes = (
+                internship.daily_end_time.hour * 60 + internship.daily_end_time.minute
+            ) - (
+                internship.daily_start_time.hour * 60 + internship.daily_start_time.minute
+            )
+            interval = internship.proof_interval_minutes or 1
+            # +1 accounts for the mandatory entry proof
+            expected_proofs = max(1, (internship_duration_minutes // interval) + 1)
+            proof_percentage = (daily_attendance.proof_count / expected_proofs) * 100
+
+            if proof_percentage >= 80 and total_hours >= internship.required_hours_per_day:
                 daily_attendance.status = "full_day"
-            elif total_hours >= internship.min_hours_for_present:
+            elif proof_percentage >= 80 and total_hours >= internship.min_hours_for_present:
                 daily_attendance.status = "partial"
             else:
                 daily_attendance.status = "absent"
+            # ----------------------------------
             
             if daily_attendance.status in ["full_day", "partial"]:
                 student_result = await db.execute(
