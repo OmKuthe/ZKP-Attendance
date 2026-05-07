@@ -35,7 +35,7 @@ const InternshipManagement = () => {
     daily_end_time: '17:00',
     lunch_break_minutes: 60,
     is_paid: false,
-    stipend_amount: 0
+    stipend_amount: ''
   })
 
   useEffect(() => {

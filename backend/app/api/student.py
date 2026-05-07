@@ -115,7 +115,8 @@ async def get_student_dashboard(
                 "company_location": {"lat": company.latitude, "lng": company.longitude} if company else None,
                 "radius": company.radius_meters if company else 200,
                 "is_test_mode": bool(internship.is_test_mode),
-                "proof_interval_minutes": internship.proof_interval_minutes
+                "proof_interval_minutes": internship.proof_interval_minutes,
+                "company_address": company.address if company else "Address not available",
             }
     
     return {
@@ -125,6 +126,106 @@ async def get_student_dashboard(
         },
         "active_internship": active_internship,
         "server_time": now_ist.strftime("%Y-%m-%d %H:%M:%S")
+    }
+
+
+@router.get("/attendance/calendar")
+async def get_attendance_calendar(
+    year: int,
+    month: int,
+    authorization: str = Header(None),
+    db: AsyncSession = Depends(get_db)
+):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Invalid token")
+    
+    token = authorization.replace("Bearer ", "")
+    current_user = await verify_student(token, db)
+    
+    # Get all attendance for the specified month
+    start_date = date(year, month, 1)
+    if month == 12:
+        end_date = date(year + 1, 1, 1)
+    else:
+        end_date = date(year, month + 1, 1)
+    
+    # Get active internship for this student
+    profile_result = await db.execute(
+        select(StudentProfile).where(StudentProfile.student_id == current_user["user_id"])
+    )
+    profile = profile_result.scalar_one_or_none()
+    
+    if not profile or not profile.current_internship_id:
+        return {"attendance": {}}
+    
+    query = select(DailyAttendance).where(
+        and_(
+            DailyAttendance.student_id == current_user["user_id"],
+            DailyAttendance.date >= start_date,
+            DailyAttendance.date < end_date
+        )
+    )
+    
+    result = await db.execute(query)
+    attendances = result.scalars().all()
+    
+    # Create calendar data
+    calendar_data = {}
+    for att in attendances:
+        calendar_data[att.date.isoformat()] = {
+            "hours": att.total_hours,
+            "status": att.status,
+            "proof_count": att.proof_count
+        }
+    
+    return {
+        "year": year,
+        "month": month,
+        "attendance": calendar_data
+    }
+
+
+@router.get("/attendance/status")
+async def get_attendance_status(
+    date_param: str,
+    authorization: str = Header(None),
+    db: AsyncSession = Depends(get_db)
+):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Invalid token")
+    
+    token = authorization.replace("Bearer ", "")
+    current_user = await verify_student(token, db)
+    
+    target_date = datetime.strptime(date_param, "%Y-%m-%d").date()
+    
+    # Get student profile
+    profile_result = await db.execute(
+        select(StudentProfile).where(StudentProfile.student_id == current_user["user_id"])
+    )
+    profile = profile_result.scalar_one_or_none()
+    
+    if not profile or not profile.current_internship_id:
+        return {"status": "no_internship", "total_hours": 0}
+    
+    # Get daily attendance
+    attendance_result = await db.execute(
+        select(DailyAttendance).where(
+            and_(
+                DailyAttendance.student_id == current_user["user_id"],
+                DailyAttendance.date == target_date
+            )
+        )
+    )
+    attendance = attendance_result.scalar_one_or_none()
+    
+    if not attendance:
+        return {"status": "absent", "total_hours": 0}
+    
+    return {
+        "status": attendance.status,
+        "total_hours": attendance.total_hours,
+        "proof_count": attendance.proof_count
     }
 
 @router.post("/attendance/submit", response_model=AttendanceResponse)
@@ -270,6 +371,7 @@ async def submit_attendance_proof(
         await db.rollback()
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
+
 @router.get("/attendance/today")
 async def get_today_attendance(
     internship_id: Optional[str] = None,
@@ -282,13 +384,25 @@ async def get_today_attendance(
     token = authorization.replace("Bearer ", "")
     current_user = await verify_student(token, db)
     
-    today = date.today()
+    # Get today's date in IST
+    now_ist = datetime.now(IST)
+    today_ist = now_ist.date()
+    today_start_ist = datetime.combine(today_ist, time.min).replace(tzinfo=IST)
+    today_end_ist = datetime.combine(today_ist, time.max).replace(tzinfo=IST)
     
-    # Get proofs for today
+    # Convert to UTC for database query
+    today_start_utc = today_start_ist.astimezone(pytz.UTC).replace(tzinfo=None)
+    today_end_utc = today_end_ist.astimezone(pytz.UTC).replace(tzinfo=None)
+    
+    print(f"DEBUG: IST today: {today_ist}")
+    print(f"DEBUG: UTC range: {today_start_utc} to {today_end_utc}")
+    
+    # Get proofs for today using UTC range
     query = select(AttendanceProof).where(
         and_(
             AttendanceProof.student_id == current_user["user_id"],
-            func.date(AttendanceProof.timestamp) == today
+            AttendanceProof.timestamp >= today_start_utc,
+            AttendanceProof.timestamp <= today_end_utc
         )
     )
     
@@ -304,6 +418,8 @@ async def get_today_attendance(
     result = await db.execute(query)
     proofs = result.scalars().all()
     
+    print(f"DEBUG: Found {len(proofs)} proofs for today")
+    
     # Convert UTC to IST for display
     proofs_data = []
     for p in proofs:
@@ -318,10 +434,11 @@ async def get_today_attendance(
         })
     
     return {
-        "date": today.isoformat(),
+        "date": today_ist.isoformat(),
         "proofs": proofs_data,
         "count": len(proofs_data)
     }
+
 
 @router.get("/attendance/history")
 async def get_attendance_history(

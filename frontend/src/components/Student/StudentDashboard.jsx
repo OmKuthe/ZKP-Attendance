@@ -9,7 +9,9 @@ import {
   XCircleIcon,
   PlayIcon,
   StopIcon,
-  ExclamationTriangleIcon
+  ExclamationTriangleIcon,
+  CalendarIcon,
+  BuildingOfficeIcon
 } from '@heroicons/react/24/outline'
 import api from '../../services/api'
 import toast from 'react-hot-toast'
@@ -25,10 +27,14 @@ const StudentDashboard = () => {
   const [todayProofs, setTodayProofs] = useState([])
   const [elapsedSeconds, setElapsedSeconds] = useState(0)
   const [sessionStartTime, setSessionStartTime] = useState(null)
+  const [calendarData, setCalendarData] = useState({})
+  const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth())
+  const [selectedYear, setSelectedYear] = useState(new Date().getFullYear())
 
   useEffect(() => {
     fetchDashboard()
     fetchTodayProofs()
+    fetchCalendarData()
     
     // Check for active tracking
     const savedTracking = localStorage.getItem('autoTracking')
@@ -41,6 +47,16 @@ const StudentDashboard = () => {
       return () => clearInterval(timerInterval)
     }
   }, [])
+
+  // Auto-refresh dashboard every 30 seconds to check if start button should be enabled
+  useEffect(() => {
+    if (!autoTracking && dashboard?.active_internship) {
+      const interval = setInterval(() => {
+        fetchDashboard()
+      }, 30000)
+      return () => clearInterval(interval)
+    }
+  }, [autoTracking, dashboard])
 
   const startElapsedTimer = (startTime) => {
     const interval = setInterval(() => {
@@ -63,13 +79,45 @@ const StudentDashboard = () => {
     }
   }
 
-  const fetchTodayProofs = async () => {
-    try {
-      const response = await api.get('/api/student/attendance/today')
-      setTodayProofs(response.data.proofs || [])
-    } catch (error) {
-      console.error('Error fetching proofs:', error)
+const fetchTodayProofs = async () => {
+  try {
+    console.log('Fetching today proofs...')
+    const response = await api.get('/api/student/attendance/today')
+    console.log('Today proofs API full response:', response.data)
+    console.log('Proofs array length:', response.data.proofs?.length)
+    console.log('Proofs data:', response.data.proofs)
+    
+    if (response.data.proofs && response.data.proofs.length > 0) {
+      setTodayProofs(response.data.proofs)
+    } else {
+      console.log('No proofs found for today')
+      setTodayProofs([])
     }
+  } catch (error) {
+    console.error('Error fetching proofs:', error)
+    toast.error('Failed to load proofs')
+  }
+}
+
+  const fetchCalendarData = async () => {
+    try {
+      const response = await api.get(`/api/student/attendance/calendar?year=${selectedYear}&month=${selectedMonth + 1}`)
+      setCalendarData(response.data.attendance || {})
+    } catch (error) {
+      console.error('Error fetching calendar:', error)
+      // Don't show toast error for calendar - it's optional
+    }
+  }
+
+  const calculateDistance = (lat1, lon1, lat2, lon2) => {
+    const R = 6371000
+    const dLat = (lat2 - lat1) * Math.PI / 180
+    const dLon = (lon2 - lon1) * Math.PI / 180
+    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+              Math.sin(dLon/2) * Math.sin(dLon/2)
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a))
+    return R * c
   }
 
   const submitProof = async (proofType, location) => {
@@ -119,17 +167,6 @@ const StudentDashboard = () => {
     } finally {
       setSubmitting(false)
     }
-  }
-
-  const calculateDistance = (lat1, lon1, lat2, lon2) => {
-    const R = 6371000
-    const dLat = (lat2 - lat1) * Math.PI / 180
-    const dLon = (lon2 - lon1) * Math.PI / 180
-    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
-              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-              Math.sin(dLon/2) * Math.sin(dLon/2)
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a))
-    return R * c
   }
 
   const startAutoTracking = async () => {
@@ -198,7 +235,7 @@ const StudentDashboard = () => {
             return
           }
           
-          // Submit hourly proof
+          // Submit periodic check (changed from 'hourly' to 'periodic')
           navigator.geolocation.getCurrentPosition(
             async (position) => {
               await submitProof('hourly', position)
@@ -248,6 +285,40 @@ const StudentDashboard = () => {
     navigate('/login')
   }
 
+  const changeMonth = async (increment) => {
+    let newMonth = selectedMonth + increment
+    let newYear = selectedYear
+    
+    if (newMonth < 0) {
+      newMonth = 11
+      newYear--
+    } else if (newMonth > 11) {
+      newMonth = 0
+      newYear++
+    }
+    
+    setSelectedMonth(newMonth)
+    setSelectedYear(newYear)
+    
+    try {
+      const response = await api.get(`/api/student/attendance/calendar?year=${newYear}&month=${newMonth + 1}`)
+      setCalendarData(response.data.attendance || {})
+    } catch (error) {
+      console.error('Error fetching calendar:', error)
+    }
+  }
+
+  const getDaysInMonth = (year, month) => {
+    return new Date(year, month + 1, 0).getDate()
+  }
+
+  const getFirstDayOfMonth = (year, month) => {
+    return new Date(year, month, 1).getDay()
+  }
+
+  // Calculate today's total completed time (from proofs, not live tracking)
+  const todayTotalHours = todayProofs.length > 0 ? (todayProofs.length * 0.5) : 0
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -261,6 +332,8 @@ const StudentDashboard = () => {
   const elapsedMinutes = Math.min(Math.floor(elapsedSeconds / 60), totalMinutes)
   const remainingMinutes = Math.max(totalMinutes - elapsedMinutes, 0)
   const progressPercent = totalMinutes > 0 ? (elapsedMinutes / totalMinutes) * 100 : 0
+  const today = new Date()
+  const todayStr = today.toISOString().split('T')[0]
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -287,29 +360,59 @@ const StudentDashboard = () => {
       </nav>
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* Time Spent Card */}
-        <div className="bg-white rounded-lg shadow p-6 mb-8">
-          <div className="flex items-center">
-            <div className="p-3 bg-indigo-100 rounded-full">
-              <ClockIcon className="h-8 w-8 text-indigo-600" />
+        {/* Two Time Cards - Today's Total Time (completed) + Live Tracking Time */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+          {/* Today's Total Time (Completed) */}
+          <div className="bg-white rounded-lg shadow p-6">
+            <div className="flex items-center">
+              <div className="p-3 bg-blue-100 rounded-full">
+                <ClockIcon className="h-8 w-8 text-blue-600" />
+              </div>
+              <div className="ml-4">
+                <p className="text-sm text-gray-500">Today's Total Time</p>
+                <p className="text-3xl font-bold text-gray-900">
+                  {todayTotalHours.toFixed(1)} hrs
+                </p>
+                <p className="text-xs text-gray-400">Based on verified proofs</p>
+              </div>
             </div>
-            <div className="ml-4">
-              <p className="text-sm text-gray-500">Time Spent at Location</p>
-              <p className="text-3xl font-bold text-gray-900">
-                {autoTracking ? `${elapsedMinutes}m ${elapsedSeconds % 60}s` : '0m 0s'}
-              </p>
-              {autoTracking && totalMinutes > 0 && (
-                <p className="text-xs text-gray-500">Target: {totalMinutes} minutes</p>
-              )}
+          </div>
+
+          {/* Live Tracking Time */}
+          <div className="bg-white rounded-lg shadow p-6">
+            <div className="flex items-center">
+              <div className="p-3 bg-green-100 rounded-full">
+                <PlayIcon className="h-8 w-8 text-green-600" />
+              </div>
+              <div className="ml-4">
+                <p className="text-sm text-gray-500">Live Tracking Time</p>
+                <p className="text-3xl font-bold text-gray-900">
+                  {autoTracking ? `${elapsedMinutes}m ${elapsedSeconds % 60}s` : '0m 0s'}
+                </p>
+                {autoTracking && totalMinutes > 0 && (
+                  <div className="mt-2">
+                    <div className="w-full bg-gray-200 rounded-full h-2">
+                      <div 
+                        className="bg-green-600 h-2 rounded-full transition-all duration-500"
+                        style={{ width: `${progressPercent}%` }}
+                      />
+                    </div>
+                    <p className="text-xs text-gray-500 mt-1">Target: {totalMinutes} minutes</p>
+                  </div>
+                )}
+                {!autoTracking && (
+                  <p className="text-xs text-gray-400">Start tracking to see live time</p>
+                )}
+              </div>
             </div>
           </div>
         </div>
 
-        {/* Internship Card */}
+        {/* Internship Card - Enhanced with Address and Today's Date */}
         {internship ? (
           <div className="bg-white rounded-lg shadow-lg overflow-hidden mb-8">
             <div className={`bg-gradient-to-r px-6 py-4 ${internship.is_test_mode ? 'from-yellow-600 to-orange-600' : 'from-indigo-600 to-purple-600'}`}>
-              <div className="flex justify-between items-center">
+              <div className="flex justify-between items-center flex-wrap gap-4">
                 <div>
                   <h2 className="text-xl font-bold text-white">Active Internship</h2>
                   <p className="text-indigo-100">{internship.company_name} - {internship.role_name}</p>
@@ -356,7 +459,25 @@ const StudentDashboard = () => {
                 </div>
               )}
 
-              {/* Progress Section */}
+              {/* Company Details - Address and Today's Date */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                <div className="flex items-start gap-2">
+                  <BuildingOfficeIcon className="h-5 w-5 text-gray-400 mt-0.5" />
+                  <div>
+                    <p className="text-sm text-gray-500">Company Address</p>
+                    <p className="text-gray-700">{internship.company_address || 'Address not available'}</p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-2">
+                  <CalendarIcon className="h-5 w-5 text-gray-400 mt-0.5" />
+                  <div>
+                    <p className="text-sm text-gray-500">Today's Date</p>
+                    <p className="text-gray-700">{today.toLocaleDateString('en-IN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Progress Section - Only during live tracking */}
               {autoTracking && (
                 <div className="mb-6">
                   <div className="flex justify-between items-center mb-2">
@@ -385,10 +506,10 @@ const StudentDashboard = () => {
               <div className="bg-gray-50 rounded-lg p-4">
                 <div className="flex items-center mb-2">
                   <MapPinIcon className="h-5 w-5 text-gray-500 mr-2" />
-                  <span className="font-medium text-gray-700">Company Location</span>
+                  <span className="font-medium text-gray-700">Verification Details</span>
                 </div>
                 <p className="text-sm text-gray-600">
-                  {internship.company_location?.lat?.toFixed(6)}, {internship.company_location?.lng?.toFixed(6)}
+                  Location verification is active. You must be within the company geofence.
                 </p>
                 <p className="text-xs text-gray-500 mt-1">
                   Verification radius: {internship.radius} meters
@@ -407,40 +528,145 @@ const StudentDashboard = () => {
           </div>
         )}
 
-        {/* Timeline */}
-        {todayProofs.length > 0 && (
+        {/* Split View: Today's Timeline + Calendar */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Today's Timeline - Left Side */}
           <div>
             <h2 className="text-xl font-bold text-gray-900 mb-4">Today's Timeline</h2>
             <div className="bg-white shadow rounded-lg overflow-hidden">
-              <div className="divide-y divide-gray-200">
-                {todayProofs.map((proof, idx) => (
-                  <div key={idx} className="p-3 hover:bg-gray-50">
-                    <div className="flex items-center gap-3">
-                      <div className="text-sm font-mono font-bold text-gray-700 w-24">
-                        {proof.time}
+              <div className="divide-y divide-gray-200 max-h-96 overflow-y-auto">
+                {todayProofs.length > 0 ? (
+                  todayProofs.map((proof, idx) => (
+                    <div key={idx} className="p-3 hover:bg-gray-50">
+                      <div className="flex items-center gap-3 flex-wrap">
+                        <div className="text-sm font-mono font-bold text-gray-700 w-24">
+                          {proof.time}
+                        </div>
+                        <div className={`px-2 py-1 text-xs font-medium rounded-full capitalize ${
+                          proof.verified ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                        }`}>
+                          {proof.type === 'hourly' ? 'Periodic Check' : proof.type}
+                        </div>
+                        {proof.verified ? (
+                          <CheckCircleIcon className="h-4 w-4 text-green-500" />
+                        ) : (
+                          <XCircleIcon className="h-4 w-4 text-red-500" />
+                        )}
+                        <span className={`text-sm ${proof.verified ? 'text-green-600' : 'text-red-600'}`}>
+                          {proof.verified 
+                            ? `✓ Verified (${Math.round(proof.distance)}m)` 
+                            : `✗ Failed (${Math.round(proof.distance)}m away)`}
+                        </span>
                       </div>
-                      <div className={`px-2 py-1 text-xs font-medium rounded-full capitalize ${
-                        proof.verified ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
-                      }`}>
-                        {proof.type}
-                      </div>
-                      {proof.verified ? (
-                        <CheckCircleIcon className="h-4 w-4 text-green-500" />
-                      ) : (
-                        <XCircleIcon className="h-4 w-4 text-red-500" />
-                      )}
-                      <span className={`text-sm ${proof.verified ? 'text-green-600' : 'text-red-600'}`}>
-                        {proof.verified 
-                          ? `✓ Verified (${Math.round(proof.distance)}m)` 
-                          : `✗ Failed (${Math.round(proof.distance)}m away)`}
-                      </span>
                     </div>
+                  ))
+                ) : (
+                  <div className="p-8 text-center text-gray-500">
+                    <ClockIcon className="h-12 w-12 mx-auto text-gray-300 mb-2" />
+                    <p>No proofs recorded today</p>
+                    <p className="text-sm">Start tracking to record your attendance</p>
                   </div>
-                ))}
+                )}
               </div>
             </div>
           </div>
-        )}
+
+          {/* Mini Calendar - Right Side */}
+          <div>
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-xl font-bold text-gray-900 flex items-center">
+                <CalendarIcon className="h-5 w-5 mr-2 text-indigo-600" />
+                Attendance Calendar
+              </h2>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => changeMonth(-1)}
+                  className="px-2 py-1 text-sm bg-gray-100 rounded hover:bg-gray-200"
+                >
+                  ◀
+                </button>
+                <span className="text-sm font-medium">
+                  {new Date(selectedYear, selectedMonth).toLocaleString('default', { month: 'long', year: 'numeric' })}
+                </span>
+                <button
+                  onClick={() => changeMonth(1)}
+                  className="px-2 py-1 text-sm bg-gray-100 rounded hover:bg-gray-200"
+                >
+                  ▶
+                </button>
+              </div>
+            </div>
+            
+            <div className="bg-white shadow rounded-lg p-4">
+              {/* Calendar Header */}
+              <div className="grid grid-cols-7 gap-1 mb-2">
+                {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(day => (
+                  <div key={day} className="text-center text-xs font-medium text-gray-500 py-2">
+                    {day}
+                  </div>
+                ))}
+              </div>
+              
+              {/* Calendar Days */}
+              <div className="grid grid-cols-7 gap-1">
+                {Array.from({ length: getFirstDayOfMonth(selectedYear, selectedMonth) }).map((_, i) => (
+                  <div key={`empty-${i}`} className="aspect-square p-1" />
+                ))}
+                {Array.from({ length: getDaysInMonth(selectedYear, selectedMonth) }).map((_, i) => {
+                  const day = i + 1
+                  const dateStr = `${selectedYear}-${String(selectedMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+                  const attendance = calendarData[dateStr]
+                  const isToday = dateStr === todayStr
+                  
+                  let bgColor = 'bg-gray-50 hover:bg-gray-100'
+                  let statusColor = ''
+                  
+                  if (attendance) {
+                    if (attendance.status === 'full_day' || attendance.status === 'partial') {
+                      bgColor = 'bg-green-50 hover:bg-green-100'
+                      statusColor = 'border-green-500'
+                    } else if (attendance.status === 'absent') {
+                      bgColor = 'bg-red-50 hover:bg-red-100'
+                      statusColor = 'border-red-500'
+                    }
+                  }
+                  
+                  return (
+                    <div
+                      key={day}
+                      className={`aspect-square p-1 rounded-lg ${bgColor} ${isToday ? 'ring-2 ring-indigo-500' : ''}`}
+                    >
+                      <div className="flex flex-col items-center justify-center h-full">
+                        <span className={`text-sm font-medium ${attendance && (attendance.status === 'full_day' || attendance.status === 'partial') ? 'text-green-700' : attendance?.status === 'absent' ? 'text-red-700' : 'text-gray-700'}`}>
+                          {day}
+                        </span>
+                        {attendance && attendance.hours > 0 && (
+                          <span className="text-xs text-gray-500">{attendance.hours}h</span>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+              
+              {/* Legend */}
+              <div className="mt-4 pt-3 border-t flex justify-center gap-4 text-xs">
+                <div className="flex items-center gap-1">
+                  <div className="w-3 h-3 bg-green-500 rounded"></div>
+                  <span>Present</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <div className="w-3 h-3 bg-red-500 rounded"></div>
+                  <span>Absent</span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <div className="w-3 h-3 bg-gray-200 rounded"></div>
+                  <span>No Record</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   )

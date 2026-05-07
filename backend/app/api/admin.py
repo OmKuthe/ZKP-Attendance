@@ -316,6 +316,50 @@ async def list_companies(
                           "latitude": c.latitude, "longitude": c.longitude, 
                           "radius": c.radius_meters} for c in companies]}
 
+
+@router.delete("/companies/{company_id}")
+async def delete_company(
+    company_id: int,
+    admin_token: str,
+    db: AsyncSession = Depends(get_db)
+):
+    await verify_admin(admin_token)
+    
+    # First check if company exists
+    result = await db.execute(
+        select(Company).where(Company.id == company_id)
+    )
+    company = result.scalar_one_or_none()
+    
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+    
+    # Check if company has any internships
+    internships_result = await db.execute(
+        select(Internship).where(Internship.company_id == company_id)
+    )
+    internships = internships_result.scalars().all()
+    
+    if internships:
+        # Option 1: Prevent deletion if has internships
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Cannot delete company. It has {len(internships)} internship(s) assigned. Delete internships first."
+        )
+        # Option 2: Cascade delete (uncomment if you want automatic deletion)
+        # for internship in internships:
+        #     await db.execute(delete(InternshipEnrollment).where(InternshipEnrollment.internship_id == internship.id))
+        #     await db.execute(delete(DailyAttendance).where(DailyAttendance.internship_id == internship.id))
+        #     await db.execute(delete(AttendanceProof).where(AttendanceProof.internship_id == internship.id))
+        #     await db.delete(internship)
+    
+    # Delete the company
+    await db.delete(company)
+    await db.commit()
+    
+    return {"message": f"Company '{company.name}' deleted successfully"}
+
+
 # ========== Internship Management ==========
 
 @router.post("/internships/create")
