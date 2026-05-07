@@ -18,6 +18,7 @@ import json
 import pandas as pd
 import io
 from fastapi import UploadFile, File
+from fastapi import Query
 
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -494,11 +495,12 @@ async def enroll_students(
 async def bulk_enroll_students(
     internship_id: str,
     file: UploadFile = File(...),
-    admin_token: str = Depends(verify_admin),
+    admin_token: str = Query(...),  # Explicitly from query parameter
     db: AsyncSession = Depends(get_db)
 ):
-    """Bulk enroll students from Excel/CSV file containing student_ids"""
-    await verify_admin(admin_token)
+    # Verify admin token
+    if admin_token != ADMIN_TOKEN:
+        raise HTTPException(status_code=401, detail="Invalid admin token")
     
     # Read the file
     contents = await file.read()
@@ -506,7 +508,7 @@ async def bulk_enroll_students(
     # Determine file type and read accordingly
     if file.filename.endswith('.csv'):
         df = pd.read_csv(io.StringIO(contents.decode('utf-8')))
-    else:  # Assume Excel
+    else:
         df = pd.read_excel(io.BytesIO(contents))
     
     # Expected columns
@@ -527,7 +529,6 @@ async def bulk_enroll_students(
     for idx, row in df.iterrows():
         student_id = str(row['student_id']).strip()
         
-        # Skip empty rows
         if not student_id or student_id == 'nan':
             failed.append(f"Row {idx+2}: Empty student ID")
             continue
@@ -541,7 +542,7 @@ async def bulk_enroll_students(
             failed.append(f"Row {idx+2}: Student '{student_id}' not found")
             continue
         
-        # CHECK: Does student already have an active internship?
+        # Check if student already has an active internship
         existing_enrollment = await db.execute(
             select(InternshipEnrollment).where(
                 and_(
@@ -593,7 +594,6 @@ async def bulk_enroll_students(
         "failed_count": len(failed),
         "failed_details": failed
     }
-
 
 @router.get("/internships/list")
 async def list_internships(

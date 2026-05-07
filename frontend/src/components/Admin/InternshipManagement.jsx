@@ -193,41 +193,50 @@ const InternshipManagement = () => {
     }
   }
 
-  const handleBulkEnrollUpload = async (e) => {
-    const file = e.target.files[0]
-    if (!file || !selectedInternship) return
+const handleBulkEnrollUpload = async (e) => {
+  const file = e.target.files[0]
+  if (!file || !selectedInternship) return
 
-    const formData = new FormData()
-    formData.append('file', file)
+  const formData = new FormData()
+  formData.append('file', file)
 
-    setUploading(true)
-    try {
-      const response = await api.post(`/api/admin/internships/${selectedInternship.internship_id}/bulk-enroll`, formData, {
-        params: { admin_token: 'admin_secret_key_2026' },
-        headers: { 'Content-Type': 'multipart/form-data' }
-      })
-      
-      const { enrolled_count, failed_count, failed_details } = response.data
-      
-      if (enrolled_count > 0) {
-        toast.success(`✅ Successfully enrolled ${enrolled_count} students!`)
+  setUploading(true)
+  try {
+    // FIX: Pass admin_token as query parameter correctly
+    const response = await api.post(
+      `/api/admin/internships/${selectedInternship.internship_id}/bulk-enroll`,
+      formData,
+      {
+        params: { admin_token: 'admin_secret_key_2026' },  // This is correct
+        headers: { 
+          'Content-Type': 'multipart/form-data',
+          // Also add the auth token if your API uses Bearer token
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        }
       }
-      
-      if (failed_count > 0) {
-        console.log('Failed enrollments:', failed_details)
-        toast.error(`⚠️ Failed to enroll ${failed_count} students. Check console for details.`)
-      }
-      
-      setShowBulkEnrollModal(false)
-      fetchData()
-    } catch (error) {
-      console.error('Bulk enrollment error:', error)
-      toast.error(error.response?.data?.detail || 'Failed to upload file')
-    } finally {
-      setUploading(false)
-      e.target.value = ''
+    )
+    
+    const { enrolled_count, failed_count, failed_details } = response.data
+    
+    if (enrolled_count > 0) {
+      toast.success(`✅ Successfully enrolled ${enrolled_count} students!`)
     }
+    
+    if (failed_count > 0) {
+      console.log('Failed enrollments:', failed_details)
+      toast.error(`⚠️ Failed to enroll ${failed_count} students. Check console for details.`)
+    }
+    
+    setShowBulkEnrollModal(false)
+    fetchData()
+  } catch (error) {
+    console.error('Bulk enrollment error:', error)
+    toast.error(error.response?.data?.detail || 'Failed to upload file')
+  } finally {
+    setUploading(false)
+    e.target.value = ''
   }
+}
 
   const downloadEnrollmentTemplate = () => {
     const csvContent = 'student_id\nSTU001\nSTU002\nSTU003'
