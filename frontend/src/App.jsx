@@ -16,6 +16,7 @@ import StudentHistory from './components/Student/StudentHistory'
 import ManagerDashboard from './components/Manager/ManagerDashboard'
 import InternshipDetails from './components/Manager/InternshipDetails'
 import StudentTimeline from './components/Manager/StudentTimeline'
+import StudentCalendar from './components/Manager/StudentCalender'
 
 // Admin Components
 import AdminDashboard from './components/Admin/AdminDashboard'
@@ -43,7 +44,7 @@ function App() {
           <Route path="/manager" element={<ProtectedRoute role="manager"><ManagerDashboard /></ProtectedRoute>} />
           <Route path="/manager/internship/:id" element={<ProtectedRoute role="manager"><InternshipDetails /></ProtectedRoute>} />
           <Route path="/manager/student/:studentId/timeline" element={<ProtectedRoute role="manager"><StudentTimeline /></ProtectedRoute>} />
-          
+          <Route path="/manager/student/:studentId/calendar" element={<ProtectedRoute allowedRoles={['manager']}><StudentCalendar /></ProtectedRoute>}/>
           {/* Admin Routes */}
           <Route path="/admin" element={<ProtectedRoute role="admin"><AdminDashboard /></ProtectedRoute>} />
           <Route path="/admin/students" element={<ProtectedRoute role="admin"><StudentManagement /></ProtectedRoute>} />

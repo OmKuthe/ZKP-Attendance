@@ -1,6 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException, Header, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Header
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, func
+from sqlalchemy import select, and_, func, or_
 from ..database import get_db
 from ..models import (
     Internship, InternshipEnrollment, DailyAttendance, AttendanceProof, 
@@ -16,8 +16,43 @@ import pytz
 
 router = APIRouter(prefix="/api/student", tags=["student"])
 
-# Define IST timezone
 IST = pytz.timezone('Asia/Kolkata')
+
+def get_ist_today() -> date:
+    return datetime.now(IST).date()
+
+
+def compute_attendance_status(
+    periodic_proof_count: int,
+    internship_duration_minutes: int,
+    proof_interval_minutes: int
+) -> str:
+    """
+    Attendance status based purely on periodic proof count.
+    Entry and exit proofs are excluded — only 'hourly' (periodic) proofs count.
+
+    Formula:
+      expected = duration_minutes / interval_minutes
+      >= 80% of expected  →  full_day
+      >= 50% of expected  →  partial
+      <  50% of expected  →  absent
+
+    Examples:
+      10-min session, 1-min interval → expected=10; full>=8, partial>=5
+      10-min session, 2-min interval → expected=5;  full>=4, partial>=3
+      60-min session, 5-min interval → expected=12; full>=10, partial>=6
+    """
+    interval = max(1, proof_interval_minutes)
+    expected = max(1, internship_duration_minutes // interval)
+    pct = (periodic_proof_count / expected) * 100
+
+    if pct >= 80:
+        return "full_day"
+    elif pct >= 50:
+        return "partial"
+    else:
+        return "absent"
+
 
 async def verify_student(token: str, db: AsyncSession, student_id: str = None):
     current_user = get_current_user(token)
@@ -27,6 +62,8 @@ async def verify_student(token: str, db: AsyncSession, student_id: str = None):
         raise HTTPException(status_code=403, detail="Access denied")
     return current_user
 
+
+# ── Dashboard ─────────────────────────────────────────────────────────────────
 @router.get("/dashboard")
 async def get_student_dashboard(
     authorization: str = Header(None),
@@ -38,21 +75,16 @@ async def get_student_dashboard(
     token = authorization.replace("Bearer ", "")
     current_user = await verify_student(token, db)
     
-    # Get student profile
     profile_result = await db.execute(
         select(StudentProfile).where(StudentProfile.student_id == current_user["user_id"])
     )
     profile = profile_result.scalar_one_or_none()
     
-    # Get current time in IST
     now_utc = datetime.now(pytz.UTC)
     now_ist = now_utc.astimezone(IST)
     current_time = now_ist.time()
-
-    # Use IST date (not UTC date)
     today = now_ist.date()
     
-    # Get active internship
     active_internship = None
     
     if profile and profile.current_internship_id:
@@ -65,7 +97,6 @@ async def get_student_dashboard(
             company_result = await db.execute(select(Company).where(Company.id == internship.company_id))
             company = company_result.scalar_one_or_none()
             
-            # Get today's attendance
             attendance_result = await db.execute(
                 select(DailyAttendance).where(
                     and_(
@@ -77,29 +108,22 @@ async def get_student_dashboard(
             )
             today_attendance = attendance_result.scalar_one_or_none()
             
-            # Check if current time is within internship hours
             can_start = False
             status_message = ""
-            
             if current_time < internship.daily_start_time:
-                can_start = False
                 status_message = f"Session starts at {internship.daily_start_time.strftime('%I:%M %p')}"
             elif current_time > internship.daily_end_time:
-                can_start = False
                 status_message = f"Session ended at {internship.daily_end_time.strftime('%I:%M %p')}"
             else:
                 can_start = True
                 status_message = "Session active"
             
-            # Calculate total minutes
             start_minutes = internship.daily_start_time.hour * 60 + internship.daily_start_time.minute
-            end_minutes = internship.daily_end_time.hour * 60 + internship.daily_end_time.minute
+            end_minutes   = internship.daily_end_time.hour * 60 + internship.daily_end_time.minute
             total_minutes = end_minutes - start_minutes
             
-            # Calculate elapsed minutes if tracking has started
             elapsed_minutes = 0
             if today_attendance and today_attendance.first_proof_time:
-                # Convert to IST for comparison
                 first_proof_utc = today_attendance.first_proof_time.replace(tzinfo=pytz.UTC)
                 elapsed_seconds = (now_utc - first_proof_utc).total_seconds()
                 elapsed_minutes = min(int(elapsed_seconds / 60), total_minutes)
@@ -131,6 +155,7 @@ async def get_student_dashboard(
     }
 
 
+# ── Calendar ──────────────────────────────────────────────────────────────────
 @router.get("/attendance/calendar")
 async def get_attendance_calendar(
     year: int,
@@ -144,49 +169,39 @@ async def get_attendance_calendar(
     token = authorization.replace("Bearer ", "")
     current_user = await verify_student(token, db)
     
-    # Get all attendance for the specified month
     start_date = date(year, month, 1)
-    if month == 12:
-        end_date = date(year + 1, 1, 1)
-    else:
-        end_date = date(year, month + 1, 1)
+    end_date   = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
     
-    # Get active internship for this student
     profile_result = await db.execute(
         select(StudentProfile).where(StudentProfile.student_id == current_user["user_id"])
     )
     profile = profile_result.scalar_one_or_none()
-    
     if not profile or not profile.current_internship_id:
         return {"attendance": {}}
     
-    query = select(DailyAttendance).where(
-        and_(
-            DailyAttendance.student_id == current_user["user_id"],
-            DailyAttendance.date >= start_date,
-            DailyAttendance.date < end_date
+    result = await db.execute(
+        select(DailyAttendance).where(
+            and_(
+                DailyAttendance.student_id == current_user["user_id"],
+                DailyAttendance.date >= start_date,
+                DailyAttendance.date < end_date
+            )
         )
     )
-    
-    result = await db.execute(query)
     attendances = result.scalars().all()
     
-    # Create calendar data
     calendar_data = {}
     for att in attendances:
         calendar_data[att.date.isoformat()] = {
-            "hours": att.total_hours,
+            "hours": float(att.total_hours or 0),
             "status": att.status,
-            "proof_count": att.proof_count
+            "proof_count": att.proof_count or 0
         }
     
-    return {
-        "year": year,
-        "month": month,
-        "attendance": calendar_data
-    }
+    return {"year": year, "month": month, "attendance": calendar_data}
 
 
+# ── Attendance status ─────────────────────────────────────────────────────────
 @router.get("/attendance/status")
 async def get_attendance_status(
     date_param: str,
@@ -201,16 +216,13 @@ async def get_attendance_status(
     
     target_date = datetime.strptime(date_param, "%Y-%m-%d").date()
     
-    # Get student profile
     profile_result = await db.execute(
         select(StudentProfile).where(StudentProfile.student_id == current_user["user_id"])
     )
     profile = profile_result.scalar_one_or_none()
-    
     if not profile or not profile.current_internship_id:
         return {"status": "no_internship", "total_hours": 0}
     
-    # Get daily attendance
     attendance_result = await db.execute(
         select(DailyAttendance).where(
             and_(
@@ -220,16 +232,17 @@ async def get_attendance_status(
         )
     )
     attendance = attendance_result.scalar_one_or_none()
-    
     if not attendance:
         return {"status": "absent", "total_hours": 0}
     
     return {
         "status": attendance.status,
-        "total_hours": attendance.total_hours,
-        "proof_count": attendance.proof_count
+        "total_hours": float(attendance.total_hours or 0),
+        "proof_count": attendance.proof_count or 0
     }
 
+
+# ── Submit proof ──────────────────────────────────────────────────────────────
 @router.post("/attendance/submit", response_model=AttendanceResponse)
 async def submit_attendance_proof(
     proof: AttendanceSubmit,
@@ -243,16 +256,13 @@ async def submit_attendance_proof(
     current_user = await verify_student(token, db, proof.student_id)
     
     try:
-        # Get internship by ID
         internship_result = await db.execute(
             select(Internship).where(Internship.internship_id == proof.internship_id)
         )
         internship = internship_result.scalar_one_or_none()
-        
         if not internship:
             raise HTTPException(status_code=404, detail="Internship not found")
         
-        # Check if student is enrolled
         enrollment_result = await db.execute(
             select(InternshipEnrollment).where(
                 and_(
@@ -262,30 +272,22 @@ async def submit_attendance_proof(
                 )
             )
         )
-        enrollment = enrollment_result.scalar_one_or_none()
-        
-        if not enrollment:
+        if not enrollment_result.scalar_one_or_none():
             raise HTTPException(status_code=403, detail="Not enrolled in this internship")
         
-        # Get company location
         company_result = await db.execute(select(Company).where(Company.id == internship.company_id))
         company = company_result.scalar_one_or_none()
-        
         if not company:
             raise HTTPException(status_code=404, detail="Company not found")
         
-        # Calculate distance
         distance = calculate_distance(
             proof.latitude, proof.longitude,
             company.latitude, company.longitude
         )
-        
-        # Check if within radius
         is_valid = distance <= company.radius_meters
 
-        # Use IST date for attendance record (fixes UTC date bug)
-        now_ist = datetime.now(IST)
-        today = now_ist.date()
+        # IST date — avoids filing under wrong date for post-midnight UTC submissions
+        today = get_ist_today()
 
         # Get or create daily attendance record
         attendance_result = await db.execute(
@@ -304,19 +306,20 @@ async def submit_attendance_proof(
                 internship_id=internship.id,
                 student_id=proof.student_id,
                 date=today,
-                status="in_progress"
+                status="in_progress",
+                proof_count=0
             )
             db.add(daily_attendance)
             await db.flush()
         
-        # Update first/last proof times
         proof_time = datetime.now(pytz.UTC).replace(tzinfo=None)
+
         if proof.proof_type == "entry" or not daily_attendance.first_proof_time:
             daily_attendance.first_proof_time = proof_time
         daily_attendance.last_proof_time = proof_time
-        daily_attendance.proof_count += 1
-        
-        # Save proof
+        daily_attendance.proof_count = (daily_attendance.proof_count or 0) + 1
+
+        # Save proof record
         new_proof = AttendanceProof(
             attendance_id=daily_attendance.id,
             student_id=proof.student_id,
@@ -332,53 +335,66 @@ async def submit_attendance_proof(
             verified_at=proof_time if is_valid else None
         )
         db.add(new_proof)
-        
-        # Update total hours and status if this is an exit proof
-        if proof.proof_type == "exit" and daily_attendance.first_proof_time:
-            total_minutes = (proof_time - daily_attendance.first_proof_time).total_seconds() / 60
-            if total_minutes > internship.lunch_break_minutes:
-                total_minutes -= internship.lunch_break_minutes
-            total_hours = round(total_minutes / 60, 2)
-            
-            daily_attendance.total_minutes = int(total_minutes)
-            daily_attendance.total_hours = total_hours
 
-            # --- 80% proof threshold logic ---
-            # How many proofs were expected over the full session duration?
-            internship_duration_minutes = (
-                internship.daily_end_time.hour * 60 + internship.daily_end_time.minute
-            ) - (
-                internship.daily_start_time.hour * 60 + internship.daily_start_time.minute
+        # ── Recompute status on every submission ──────────────────────────────
+        # Count periodic proofs already saved (the new one isn't committed yet)
+        periodic_saved_result = await db.execute(
+            select(func.count(AttendanceProof.id)).where(
+                and_(
+                    AttendanceProof.attendance_id == daily_attendance.id,
+                    AttendanceProof.proof_type == "hourly"
+                )
             )
-            interval = internship.proof_interval_minutes or 1
-            # +1 accounts for the mandatory entry proof
-            expected_proofs = max(1, (internship_duration_minutes // interval) + 1)
-            proof_percentage = (daily_attendance.proof_count / expected_proofs) * 100
+        )
+        periodic_saved = periodic_saved_result.scalar() or 0
+        # Add 1 if current proof is also periodic
+        periodic_count = periodic_saved + (1 if proof.proof_type == "hourly" else 0)
 
-            if proof_percentage >= 80 and total_hours >= internship.required_hours_per_day:
-                daily_attendance.status = "full_day"
-            elif proof_percentage >= 80 and total_hours >= internship.min_hours_for_present:
-                daily_attendance.status = "partial"
-            else:
-                daily_attendance.status = "absent"
-            # ----------------------------------
-            
-            if daily_attendance.status in ["full_day", "partial"]:
+        internship_duration_minutes = (
+            internship.daily_end_time.hour * 60 + internship.daily_end_time.minute
+        ) - (
+            internship.daily_start_time.hour * 60 + internship.daily_start_time.minute
+        )
+
+        # Update hours (always, not just on exit)
+        if daily_attendance.first_proof_time:
+            raw_minutes = (proof_time - daily_attendance.first_proof_time).total_seconds() / 60
+            # Only deduct lunch break if session lasted longer than the break itself
+            if raw_minutes > (internship.lunch_break_minutes or 0):
+                raw_minutes -= (internship.lunch_break_minutes or 0)
+            daily_attendance.total_minutes = int(raw_minutes)
+            daily_attendance.total_hours   = round(raw_minutes / 60, 2)
+
+        if proof.proof_type == "exit":
+            # Finalise: compute status from periodic proof count
+            final_status = compute_attendance_status(
+                periodic_count,
+                internship_duration_minutes,
+                internship.proof_interval_minutes or 1
+            )
+            daily_attendance.status = final_status
+
+            # Update student cumulative stats
+            if final_status in ["full_day", "partial"]:
                 student_result = await db.execute(
                     select(StudentProfile).where(StudentProfile.student_id == proof.student_id)
                 )
                 student = student_result.scalar_one_or_none()
                 if student:
-                    student.total_hours_completed += total_hours
-                    if daily_attendance.status == "full_day":
-                        student.total_days_present += 1
-        
+                    student.total_hours_completed = (student.total_hours_completed or 0) + daily_attendance.total_hours
+                    if final_status == "full_day":
+                        student.total_days_present = (student.total_days_present or 0) + 1
+        else:
+            # Keep in_progress until exit — manager sees them as actively present
+            daily_attendance.status = "in_progress"
+
         await db.commit()
         
         return AttendanceResponse(
             status="success",
             verified=is_valid,
-            message=f"{proof.proof_type.capitalize()} proof recorded",
+            message=f"{proof.proof_type.capitalize()} proof recorded. "
+                    f"Periodic proofs: {periodic_count}",
             proof_id=new_proof.id
         )
         
@@ -390,6 +406,7 @@ async def submit_attendance_proof(
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
+# ── Today's proofs ────────────────────────────────────────────────────────────
 @router.get("/attendance/today")
 async def get_today_attendance(
     internship_id: Optional[str] = None,
@@ -402,20 +419,13 @@ async def get_today_attendance(
     token = authorization.replace("Bearer ", "")
     current_user = await verify_student(token, db)
     
-    # Get today's date in IST
-    now_ist = datetime.now(IST)
-    today_ist = now_ist.date()
+    now_ist         = datetime.now(IST)
+    today_ist       = now_ist.date()
     today_start_ist = datetime.combine(today_ist, time.min).replace(tzinfo=IST)
-    today_end_ist = datetime.combine(today_ist, time.max).replace(tzinfo=IST)
-    
-    # Convert to UTC for database query
+    today_end_ist   = datetime.combine(today_ist, time.max).replace(tzinfo=IST)
     today_start_utc = today_start_ist.astimezone(pytz.UTC).replace(tzinfo=None)
-    today_end_utc = today_end_ist.astimezone(pytz.UTC).replace(tzinfo=None)
+    today_end_utc   = today_end_ist.astimezone(pytz.UTC).replace(tzinfo=None)
     
-    print(f"DEBUG: IST today: {today_ist}")
-    print(f"DEBUG: UTC range: {today_start_utc} to {today_end_utc}")
-    
-    # Get proofs for today using UTC range
     query = select(AttendanceProof).where(
         and_(
             AttendanceProof.student_id == current_user["user_id"],
@@ -432,32 +442,29 @@ async def get_today_attendance(
         if internship:
             query = query.where(AttendanceProof.internship_id == internship.id)
     
-    query = query.order_by(AttendanceProof.timestamp)
+    query  = query.order_by(AttendanceProof.timestamp)
     result = await db.execute(query)
     proofs = result.scalars().all()
     
-    print(f"DEBUG: Found {len(proofs)} proofs for today")
-    
-    # Convert UTC to IST for display
     proofs_data = []
     for p in proofs:
         utc_time = p.timestamp.replace(tzinfo=pytz.UTC)
         ist_time = utc_time.astimezone(IST)
-        
         proofs_data.append({
-            "time": ist_time.strftime("%H:%M:%S"),
-            "type": p.proof_type,
+            "time":     ist_time.strftime("%H:%M:%S"),
+            "type":     p.proof_type,
             "verified": p.is_valid,
             "distance": round(p.distance_from_company, 2) if p.distance_from_company else None
         })
     
     return {
-        "date": today_ist.isoformat(),
+        "date":   today_ist.isoformat(),
         "proofs": proofs_data,
-        "count": len(proofs_data)
+        "count":  len(proofs_data)
     }
 
 
+# ── History ───────────────────────────────────────────────────────────────────
 @router.get("/attendance/history")
 async def get_attendance_history(
     authorization: str = Header(None),
@@ -486,19 +493,18 @@ async def get_attendance_history(
             select(Internship).where(Internship.id == record.internship_id)
         )
         internship = internship_result.scalar_one_or_none()
-        
         company_result = await db.execute(
             select(Company).where(Company.id == internship.company_id)
         ) if internship else None
         company = company_result.scalar_one_or_none() if company_result else None
         
         history.append({
-            "date": record.date.isoformat(),
-            "company": company.name if company else "Unknown",
-            "role": internship.role_name if internship else "Unknown",
-            "hours": float(record.total_hours),
-            "status": record.status,
-            "proof_count": record.proof_count
+            "date":        record.date.isoformat(),
+            "company":     company.name if company else "Unknown",
+            "role":        internship.role_name if internship else "Unknown",
+            "hours":       float(record.total_hours or 0),
+            "status":      record.status,
+            "proof_count": record.proof_count or 0
         })
     
     return {"history": history, "total": len(history)}
