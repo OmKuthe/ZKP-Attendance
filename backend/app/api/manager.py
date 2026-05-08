@@ -5,7 +5,7 @@ from ..database import get_db
 from ..models import Internship, InternshipEnrollment, DailyAttendance, AttendanceProof, User, StudentProfile, Company
 from ..utils.helpers import calculate_attendance_hours
 from .auth import get_current_user
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta,time
 from typing import Optional
 import json
 import pytz
@@ -48,6 +48,12 @@ async def get_manager_dashboard(
     
     dashboard_data = []
     today = get_ist_today()
+    
+    # Get UTC range for today
+    day_start_ist = datetime.combine(today, time.min).replace(tzinfo=IST)
+    day_end_ist = datetime.combine(today, time.max).replace(tzinfo=IST)
+    day_start_utc = day_start_ist.astimezone(pytz.UTC).replace(tzinfo=None)
+    day_end_utc = day_end_ist.astimezone(pytz.UTC).replace(tzinfo=None)
 
     for internship in internships:
         # Get enrolled students
@@ -57,21 +63,21 @@ async def get_manager_dashboard(
         enrollments = enrollments_result.scalars().all()
         total_students = len(enrollments)
         
-        # Count in_progress as present too — students actively tracking right now
-        present_today = await db.execute(
-            select(func.count(DailyAttendance.id)).where(
-                and_(
-                    DailyAttendance.internship_id == internship.id,
-                    DailyAttendance.date == today,
-                    or_(
-                        DailyAttendance.status == "full_day",
-                        DailyAttendance.status == "partial",
-                        DailyAttendance.status == "in_progress"
+        # Count present students based on having ANY proof today
+        present_count = 0
+        for enrollment in enrollments:
+            proof_count_result = await db.execute(
+                select(func.count(AttendanceProof.id)).where(
+                    and_(
+                        AttendanceProof.internship_id == internship.id,
+                        AttendanceProof.student_id == enrollment.student_id,
+                        AttendanceProof.timestamp >= day_start_utc,
+                        AttendanceProof.timestamp <= day_end_utc
                     )
                 )
             )
-        )
-        present_count = present_today.scalar() or 0
+            if (proof_count_result.scalar() or 0) > 0:
+                present_count += 1
         
         # Get company details
         company_result = await db.execute(select(Company).where(Company.id == internship.company_id))
@@ -89,6 +95,7 @@ async def get_manager_dashboard(
         })
     
     return {"internships": dashboard_data}
+
 
 # ========== Internship Details ==========
 @router.get("/internship/{internship_id}")
@@ -192,11 +199,18 @@ async def get_internship_details(
         )
         today_verified_count = today_verified_result.scalar() or 0
         
+        today_status = "absent"
+        if today_proof_count > 0:
+            today_status = "present"
+        # Also keep track of in_progress for live tracking
+        if attendance and attendance.status == "in_progress":
+            today_status = "in_progress"
+
         students_data.append({
             "student_id": enrollment.student_id,
             "student_name": user.full_name if user else "Unknown",
             "roll_number": student.roll_number if student else "N/A",
-            "today_status": attendance.status if attendance else "absent",
+            "today_status": today_status,  # NEW - based on proof count
             "today_hours": float(attendance.total_hours) if attendance else 0,
             "proof_count": today_proof_count,
             "verified_count": today_verified_count,
@@ -204,7 +218,7 @@ async def get_internship_details(
             "last_location": {"lat": latest_proof.latitude, "lng": latest_proof.longitude} if latest_proof else None
         })
     
-    present_statuses = ["full_day", "partial", "in_progress"]
+    present_statuses = ["present", "in_progress"]
     return {
         "internship": {
             "internship_id": internship.internship_id,

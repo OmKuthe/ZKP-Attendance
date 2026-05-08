@@ -13,7 +13,8 @@ import {
   MagnifyingGlassIcon,
   ChartBarIcon,
   ExclamationTriangleIcon,
-  TableCellsIcon
+  TableCellsIcon,
+  BuildingOfficeIcon
 } from '@heroicons/react/24/outline'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
@@ -32,10 +33,9 @@ const getISTDateStr = () => {
   ].join('-')
 }
 
-// Parse an ISO string that already has +05:30 offset (we write it that way in backend)
+// Parse an ISO string that already has +05:30 offset
 const formatISTTime = (isoStr) => {
   if (!isoStr) return null
-  // isoStr looks like "2025-05-08T14:30:00+05:30"
   try {
     return new Date(isoStr).toLocaleTimeString('en-IN', {
       hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true
@@ -45,15 +45,16 @@ const formatISTTime = (isoStr) => {
   }
 }
 
-// ── Status badge ─────────────────────────────────────────────────────────────
+// ── Status badge ── FIXED: Added 'present' mapping ────────────────────────────
 const StatusBadge = ({ status }) => {
   const map = {
     full_day:    { label: 'Full Day',    cls: 'bg-emerald-100 text-emerald-800' },
     partial:     { label: 'Partial',     cls: 'bg-yellow-100 text-yellow-800'   },
-    in_progress: { label: 'In Progress', cls: 'bg-blue-100 text-blue-700'       },  // FIX
+    in_progress: { label: 'In Progress', cls: 'bg-blue-100 text-blue-700'       }, 
+    present:     { label: 'Present',     cls: 'bg-emerald-100 text-emerald-800' },
     absent:      { label: 'Absent',      cls: 'bg-red-100 text-red-800'         },
   }
-  const { label, cls } = map[status] ?? { label: 'Unknown', cls: 'bg-gray-100 text-gray-700' }
+  const { label, cls } = map[status] ?? { label: status || 'Unknown', cls: 'bg-gray-100 text-gray-700' }
   return <span className={`px-2 py-1 text-xs font-medium rounded-full ${cls}`}>{label}</span>
 }
 
@@ -100,7 +101,6 @@ const AttendanceHeatmap = ({ trend, totalStudents }) => {
           )
         })}
       </div>
-      {/* Legend */}
       <div className="flex items-center gap-3 mt-3 text-xs text-gray-500">
         <span>Less</span>
         {['bg-gray-100','bg-red-400','bg-yellow-400','bg-emerald-400','bg-emerald-600'].map(c => (
@@ -123,7 +123,7 @@ const InternshipDetails = () => {
   const [analytics, setAnalytics]       = useState(null)
   const [loading, setLoading]           = useState(true)
   const [loadingAnalytics, setLoadingAnalytics] = useState(false)
-  const [activeTab, setActiveTab]       = useState('students')  // 'students' | 'analytics'
+  const [activeTab, setActiveTab]       = useState('students')
   const [searchTerm, setSearchTerm]     = useState('')
   const [filter, setFilter]             = useState('all')
 
@@ -133,7 +133,6 @@ const InternshipDetails = () => {
     return () => clearInterval(interval)
   }, [id])
 
-  // Fetch analytics whenever tab switches to analytics
   useEffect(() => {
     if (activeTab === 'analytics' && !analytics) {
       fetchAnalytics()
@@ -185,14 +184,15 @@ const InternshipDetails = () => {
     }
   }
 
-  // ── Filtering ────────────────────────────────────────────────────────────────
+  // ── Filtering ── FIXED: Include 'present' status ─────────────────────────────
   const filteredStudents = students.filter(student => {
     const matchesSearch =
       student.student_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
       student.student_id.toLowerCase().includes(searchTerm.toLowerCase()) ||
       (student.roll_number || '').toLowerCase().includes(searchTerm.toLowerCase())
 
-    const presentStatuses = ['full_day', 'partial', 'in_progress']
+    // Updated to include 'present' as a present status
+    const presentStatuses = ['full_day', 'partial', 'in_progress', 'present']
     const matchesFilter =
       filter === 'all' ||
       (filter === 'present' && presentStatuses.includes(student.today_status)) ||
@@ -201,11 +201,11 @@ const InternshipDetails = () => {
     return matchesSearch && matchesFilter
   })
 
-  const presentStatuses = ['full_day', 'partial', 'in_progress']
+  // FIXED: Count present students correctly
+  const presentStatuses = ['full_day', 'partial', 'in_progress', 'present']
   const presentCount = filteredStudents.filter(s => presentStatuses.includes(s.today_status)).length
   const absentCount  = filteredStudents.filter(s => s.today_status === 'absent').length
 
-  // ── Loading / not found ───────────────────────────────────────────────────────
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -227,7 +227,6 @@ const InternshipDetails = () => {
     )
   }
 
-  // ── Render ────────────────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-gray-50 py-8">
       <div className="max-w-7xl mx-auto px-4">
@@ -236,7 +235,7 @@ const InternshipDetails = () => {
           Back to Dashboard
         </button>
 
-        {/* ── Internship header card ── */}
+        {/* ── Internship header card ── FIXED: Show address instead of coordinates ── */}
         <div className="bg-white rounded-xl shadow p-6 mb-6">
           <div className="flex justify-between items-start flex-wrap gap-4">
             <div>
@@ -264,12 +263,11 @@ const InternshipDetails = () => {
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <MapPinIcon className="h-5 w-5 text-gray-400" />
+              <BuildingOfficeIcon className="h-5 w-5 text-gray-400" />
               <div>
-                <p className="text-xs text-gray-500">Location & Radius</p>
+                <p className="text-xs text-gray-500">Company Address</p>
                 <p className="font-medium text-sm">
-                  {internship.company_location?.lat?.toFixed(4)}, {internship.company_location?.lng?.toFixed(4)}
-                  {' · '}{internship.radius}m
+                  {internship.company_address || 'Address not available'}
                 </p>
               </div>
             </div>
@@ -324,7 +322,6 @@ const InternshipDetails = () => {
                   Students ({filteredStudents.length})
                 </h3>
                 <div className="flex gap-2 flex-wrap">
-                  {/* Search */}
                   <div className="relative">
                     <MagnifyingGlassIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
                     <input
@@ -335,7 +332,6 @@ const InternshipDetails = () => {
                       className="pl-9 pr-4 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
                     />
                   </div>
-                  {/* Filter */}
                   <select
                     value={filter}
                     onChange={e => setFilter(e.target.value)}
@@ -362,7 +358,6 @@ const InternshipDetails = () => {
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-100">
                   {filteredStudents.map(student => {
-                    // Check at-risk from analytics if available
                     const analyticsStudent = analytics?.student_stats?.find(s => s.student_id === student.student_id)
                     const isAtRisk = analyticsStudent?.is_at_risk
 
@@ -427,7 +422,7 @@ const InternshipDetails = () => {
         )}
 
         {/* ════════════════════════════════════════════════════════════════ */}
-        {/*  ANALYTICS TAB                                                  */}
+        {/*  ANALYTICS TAB (unchanged)                                       */}
         {/* ════════════════════════════════════════════════════════════════ */}
         {activeTab === 'analytics' && (
           <div>
@@ -437,8 +432,7 @@ const InternshipDetails = () => {
               </div>
             ) : analytics ? (
               <div className="space-y-6">
-
-                {/* ── Top KPIs ── */}
+                {/* Top KPIs */}
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                   {[
                     { label: 'Overall Rate (30d)',  value: `${analytics.overall_attendance_rate}%`, color: 'indigo' },
@@ -453,13 +447,13 @@ const InternshipDetails = () => {
                   ))}
                 </div>
 
-                {/* ── Attendance Heatmap ── */}
+                {/* Attendance Heatmap */}
                 <div className="bg-white rounded-xl shadow p-6">
                   <h3 className="text-base font-semibold text-gray-800 mb-4">30-Day Attendance Heatmap</h3>
                   <AttendanceHeatmap trend={analytics.daily_trend} totalStudents={analytics.total_students} />
                 </div>
 
-                {/* ── Daily trend line ── */}
+                {/* Daily trend line */}
                 <div className="bg-white rounded-xl shadow p-6">
                   <h3 className="text-base font-semibold text-gray-800 mb-4">Daily Attendance Trend</h3>
                   <ResponsiveContainer width="100%" height={220}>
@@ -482,14 +476,14 @@ const InternshipDetails = () => {
                   </ResponsiveContainer>
                 </div>
 
-                {/* ── Per-student bar chart ── */}
+                {/* Per-student bar chart */}
                 <div className="bg-white rounded-xl shadow p-6">
                   <h3 className="text-base font-semibold text-gray-800 mb-4">Per-Student Attendance & Proof Success Rate</h3>
                   <ResponsiveContainer width="100%" height={Math.max(200, analytics.student_stats.length * 36)}>
                     <BarChart
                       layout="vertical"
                       data={analytics.student_stats.map(s => ({
-                        name: s.student_name.split(' ')[0],   // first name only to save space
+                        name: s.student_name.split(' ')[0],
                         'Attendance %': s.attendance_pct,
                         'Proof Success %': s.proof_success_rate,
                         atRisk: s.is_at_risk
@@ -501,7 +495,7 @@ const InternshipDetails = () => {
                       <YAxis type="category" dataKey="name" tick={{ fontSize: 11 }} width={70} />
                       <Tooltip content={<StatsTooltip />} />
                       <Legend />
-                      <Bar dataKey="Attendance %"    fill="#6366f1" radius={[0, 4, 4, 0]} barSize={10}>
+                      <Bar dataKey="Attendance %" fill="#6366f1" radius={[0, 4, 4, 0]} barSize={10}>
                         {analytics.student_stats.map((s, idx) => (
                           <Cell key={idx} fill={s.is_at_risk ? '#f59e0b' : '#6366f1'} />
                         ))}
@@ -512,7 +506,7 @@ const InternshipDetails = () => {
                   <p className="text-xs text-amber-600 mt-2">⚠ Amber bars = at-risk (below 75% attendance)</p>
                 </div>
 
-                {/* ── Proof hour distribution ── */}
+                {/* Proof hour distribution */}
                 <div className="bg-white rounded-xl shadow p-6">
                   <h3 className="text-base font-semibold text-gray-800 mb-4">Proof Submission by Hour (IST)</h3>
                   <ResponsiveContainer width="100%" height={180}>
@@ -526,7 +520,7 @@ const InternshipDetails = () => {
                   </ResponsiveContainer>
                 </div>
 
-                {/* ── At-risk students list ── */}
+                {/* At-risk students list */}
                 {analytics.at_risk_students.length > 0 && (
                   <div className="bg-white rounded-xl shadow p-6">
                     <div className="flex items-center gap-2 mb-4">
@@ -558,7 +552,6 @@ const InternshipDetails = () => {
                     </div>
                   </div>
                 )}
-
               </div>
             ) : (
               <div className="bg-white rounded-xl shadow p-10 text-center text-gray-400">
@@ -567,7 +560,6 @@ const InternshipDetails = () => {
             )}
           </div>
         )}
-
       </div>
     </div>
   )
