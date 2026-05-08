@@ -329,10 +329,10 @@ const handleBulkEnrollUpload = async (e) => {
                       <p className="text-sm text-gray-600">Manager: {internship.manager_id}</p>
                     </div>
                     <div className="flex gap-2">
-                      {internship.status !== 'active' && (
-                        <button onClick={() => handleActivateInternship(internship.internship_id)} className="px-3 py-1 bg-green-500 text-white text-sm rounded-md hover:bg-green-600">
-                          <PlayIcon className="h-4 w-4 inline mr-1" />
-                          Activate
+                      {internship.status !== 'active' && internship.start_date > new Date().toISOString().split('T')[0] && (
+                        <button disabled className="px-3 py-1 bg-gray-400 text-white text-sm rounded-md cursor-not-allowed">
+                        <PlayIcon className="h-4 w-4 inline mr-1" />
+                          Auto-activates on {internship.start_date}
                         </button>
                       )}
                       <button onClick={() => { setSelectedInternship(internship); setShowEnrollModal(true) }} className="px-3 py-1 border text-sm rounded-md hover:bg-gray-50">

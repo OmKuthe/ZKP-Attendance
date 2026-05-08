@@ -5,7 +5,7 @@ from sqlalchemy.orm import selectinload
 from ..database import get_db
 from ..models import (
     User, StudentProfile, ManagerProfile, Company, Internship, 
-    InternshipEnrollment, DailyAttendance, AttendanceProof
+    InternshipEnrollment, DailyAttendance, AttendanceProof,Holiday 
 )
 from ..schemas import (
     StudentCreate, ManagerCreate, CompanyCreate, InternshipCreate
@@ -25,6 +25,13 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 ADMIN_TOKEN = "admin_secret_key_2026"
+
+
+
+def should_be_active(internship) -> bool:
+    """Check if internship should be active based on current date"""
+    today = date.today()
+    return internship.start_date <= today <= internship.end_date
 
 async def verify_admin(admin_token: str):
     if admin_token != ADMIN_TOKEN:
@@ -639,6 +646,7 @@ async def bulk_enroll_students(
         "failed_details": failed
     }
 
+
 @router.get("/internships/list")
 async def list_internships(
     admin_token: str,
@@ -650,6 +658,8 @@ async def list_internships(
     internships = result.scalars().all()
     
     internship_list = []
+    today = date.today()
+    
     for internship in internships:
         company_result = await db.execute(select(Company).where(Company.id == internship.company_id))
         company = company_result.scalar_one_or_none()
@@ -661,6 +671,14 @@ async def list_internships(
         )
         enrolled_count = count_result.scalar() or 0
         
+        # Auto-activate based on date
+        status = internship.status
+        if internship.start_date <= today <= internship.end_date:
+            status = "active"
+        elif today > internship.end_date:
+            status = "completed"
+        # else status remains "upcoming"
+        
         internship_list.append({
             "internship_id": internship.internship_id,
             "company_name": company.name if company else "Unknown",
@@ -668,15 +686,15 @@ async def list_internships(
             "manager_id": internship.manager_id,
             "start_date": internship.start_date.isoformat(),
             "end_date": internship.end_date.isoformat(),
-            "status": internship.status,
+            "status": status,  # Use computed status
             "enrolled_students": enrolled_count,
             "daily_hours": f"{internship.daily_start_time} - {internship.daily_end_time}",
             "description": internship.description,
             "is_test_mode": internship.is_test_mode,
             "test_duration_minutes": internship.test_duration_minutes,
             "proof_interval_minutes": internship.proof_interval_minutes,
-            "is_paid": getattr(internship, 'is_paid', False),  # NEW
-            "stipend_amount": getattr(internship, 'stipend_amount', 0)  # NEW
+            "is_paid": getattr(internship, 'is_paid', False),
+            "stipend_amount": getattr(internship, 'stipend_amount', 0)
         })
     
     return {"internships": internship_list}
@@ -706,6 +724,102 @@ async def delete_internship(
     await db.commit()
     
     return {"message": f"Internship {internship_id} deleted"}
+
+
+# ========== Holiday Management ==========
+@router.post("/holidays/create")
+async def create_holiday(
+    holiday_data: dict,
+    admin_token: str,
+    db: AsyncSession = Depends(get_db)
+):
+    await verify_admin(admin_token)
+    
+    # Check if holiday already exists on this date
+    existing = await db.execute(
+        select(Holiday).where(Holiday.date == holiday_data.get("date"))
+    )
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="Holiday already exists on this date")
+    
+    new_holiday = Holiday(
+        date=datetime.strptime(holiday_data.get("date"), "%Y-%m-%d").date(),
+        name=holiday_data.get("name"),
+        description=holiday_data.get("description"),
+        is_global=holiday_data.get("is_global", True),
+        company_id=holiday_data.get("company_id"),
+        created_by="admin"
+    )
+    db.add(new_holiday)
+    await db.commit()
+    await db.refresh(new_holiday)
+    
+    return {"message": f"Holiday '{holiday_data.get('name')}' created", "holiday_id": new_holiday.id}
+
+
+@router.get("/holidays/list")
+async def list_holidays(
+    admin_token: str,
+    db: AsyncSession = Depends(get_db),
+    year: Optional[int] = None,
+    month: Optional[int] = None
+):
+    await verify_admin(admin_token)
+    
+    query = select(Holiday).order_by(Holiday.date)
+    
+    # Filter by year/month if provided
+    if year and month:
+        start_date = date(year, month, 1)
+        if month == 12:
+            end_date = date(year + 1, 1, 1)
+        else:
+            end_date = date(year, month + 1, 1)
+        query = query.where(Holiday.date >= start_date, Holiday.date < end_date)
+    
+    result = await db.execute(query)
+    holidays = result.scalars().all()
+    
+    holiday_list = []
+    for holiday in holidays:
+        holiday_list.append({
+            "id": holiday.id,
+            "date": holiday.date.isoformat(),
+            "name": holiday.name,
+            "description": holiday.description,
+            "is_global": holiday.is_global,
+            "company_id": holiday.company_id
+        })
+    
+    return {"holidays": holiday_list, "total": len(holiday_list)}
+
+
+@router.delete("/holidays/{date}")
+async def delete_holiday(
+    date: str,
+    admin_token: str,
+    db: AsyncSession = Depends(get_db)
+):
+    await verify_admin(admin_token)
+    
+    # Parse date
+    try:
+        holiday_date = datetime.strptime(date, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+    
+    result = await db.execute(
+        select(Holiday).where(Holiday.date == holiday_date)
+    )
+    holiday = result.scalar_one_or_none()
+    
+    if not holiday:
+        raise HTTPException(status_code=404, detail="Holiday not found")
+    
+    await db.delete(holiday)
+    await db.commit()
+    
+    return {"message": f"Holiday '{holiday.name}' deleted successfully"}
 
 @router.get("/dashboard/stats")
 async def get_admin_stats(
